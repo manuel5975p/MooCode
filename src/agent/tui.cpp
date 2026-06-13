@@ -1675,6 +1675,177 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // Track pending state across frames so we can reset sel on new questions.
     bool question_was_pending = false;
 
+    // Settings editor modal: opened via /settings. Shows every settings.toml
+    // field as a navigable row; Enter edits the selected field inline. Esc
+    // cancels the edit or closes the modal; changes are persisted on close
+    // when any field was modified. Guarded by state_mtx.
+    struct SettingsScreen {
+        bool active = false;
+        int sel = 0;           // which row is selected
+        bool editing = false;  // inline edit mode for the selected field
+        std::string edit_buf;  // edit buffer (string fields and int/double)
+        // Types of fields in the settings list.
+        enum class FType { String, Int, Choice, Double };
+        struct Field {
+            std::string label;               // display name
+            FType type;
+            std::vector<std::string> choices; // for Choice; empty => free text
+        };
+        std::vector<Field> fields;
+        bool dirty = false;  // true when any field was modified
+
+        // The working copy of settings; mutated by field setters.
+        Settings draft;
+
+        // Live values for display fallback (model when unset, etc.).
+        std::string live_model;
+        std::string live_provider;
+
+        // Read the current display value of field idx.
+        std::string field_value(int idx) const {
+            if (idx < 0 || idx >= static_cast<int>(fields.size())) return {};
+            const auto& f = fields[idx];
+            if (f.label == "provider")
+                return draft.provider.empty() ? "auto" : draft.provider;
+            if (f.label == "model")
+                return draft.model.empty() ? live_model : draft.model;
+            if (f.label == "base_url") return draft.base_url;
+            if (f.label == "context_window")
+                return draft.context_window > 0
+                           ? std::to_string(draft.context_window) : "(unset)";
+            if (f.label == "max_iterations")
+                return draft.max_iterations > 0
+                           ? std::to_string(draft.max_iterations) : "(unset)";
+            if (f.label == "max_tokens")
+                return draft.max_tokens > 0
+                           ? std::to_string(draft.max_tokens) : "(unset)";
+            if (f.label == "effort")
+                return draft.effort.empty() ? "(unset)" : draft.effort;
+            if (f.label == "temperature")
+                return draft.temperature < 0
+                           ? "(unset)"
+                           : float_str(draft.temperature);
+            if (f.label == "thinking")
+                return draft.thinking < 0  ? "unset"
+                       : draft.thinking > 0 ? "on" : "off";
+            if (f.label == "rtk")
+                return draft.rtk < 0  ? "unset"
+                       : draft.rtk > 0 ? "on" : "off";
+            if (f.label == "theme")
+                return draft.theme.empty() ? "(unset)" : draft.theme;
+            if (f.label == "profile")
+                return draft.profile.empty() ? "(none)" : draft.profile;
+            return {};
+        }
+
+        // Apply a new value to field idx. Returns true on success.
+        bool apply_value(int idx, const std::string& val) {
+            if (idx < 0 || idx >= static_cast<int>(fields.size())) return false;
+            const auto& f = fields[idx];
+            dirty = true;
+            if (f.label == "provider")
+                draft.provider = (val == "auto") ? "" : val;
+            else if (f.label == "model")
+                draft.model = val;
+            else if (f.label == "base_url")
+                draft.base_url = val;
+            else if (f.label == "context_window")
+                draft.context_window = std::max(0, std::atoi(val.c_str()));
+            else if (f.label == "max_iterations")
+                draft.max_iterations = std::max(0, std::atoi(val.c_str()));
+            else if (f.label == "max_tokens")
+                draft.max_tokens = std::max(0, std::atoi(val.c_str()));
+            else if (f.label == "effort")
+                draft.effort = (val == "(unset)") ? "" : val;
+            else if (f.label == "temperature") {
+                if (val == "(unset)" || val.empty()) draft.temperature = -1;
+                else draft.temperature = std::strtod(val.c_str(), nullptr);
+            } else if (f.label == "thinking") {
+                if (val == "on") draft.thinking = 1;
+                else if (val == "off") draft.thinking = 0;
+                else draft.thinking = -1;
+            } else if (f.label == "rtk") {
+                if (val == "on") draft.rtk = 1;
+                else if (val == "off") draft.rtk = 0;
+                else draft.rtk = -1;
+            } else if (f.label == "theme")
+                draft.theme = (val == "(unset)") ? "" : val;
+            else if (f.label == "profile")
+                draft.profile = (val == "(none)") ? "" : val;
+            else
+                return false;
+            return true;
+        }
+
+        // Populate the field list (called when opening the modal).
+        void rebuild(const Settings& current, const std::string& lm,
+                     const std::string& lp) {
+            draft = current;
+            live_model = lm;
+            live_provider = lp;
+            fields.clear();
+            fields.push_back({"provider", FType::Choice,
+                              {"openai", "anthropic", "auto"}});
+            fields.push_back({"model", FType::String, {}});
+            fields.push_back({"base_url", FType::String, {}});
+            fields.push_back({"context_window", FType::Int, {}});
+            fields.push_back({"max_iterations", FType::Int, {}});
+            fields.push_back({"max_tokens", FType::Int, {}});
+            fields.push_back({"effort", FType::Choice,
+                              {"(unset)", "none", "low", "medium", "high"}});
+            fields.push_back({"temperature", FType::Double, {}});
+            fields.push_back({"thinking", FType::Choice,
+                              {"unset", "on", "off"}});
+            fields.push_back({"rtk", FType::Choice,
+                              {"unset", "on", "off"}});
+            fields.push_back({"theme", FType::Choice,
+                              {"(unset)", "default", "mono", "vivid", "none"}});
+            fields.push_back({"profile", FType::String, {}});
+        }
+
+        // Begin editing the selected field: prime edit_buf and enter Choice
+        // cycling for Choice fields.
+        void begin_edit() {
+            if (sel < 0 || sel >= static_cast<int>(fields.size())) return;
+            const auto& f = fields[sel];
+            if (f.type == FType::Choice) {
+                // Cycle to next choice on each Enter press.
+                const std::string cur = field_value(sel);
+                auto it = std::ranges::find(f.choices, cur);
+                std::size_t idx = (it == f.choices.end()) ? 0
+                    : static_cast<std::size_t>(it - f.choices.begin());
+                idx = (idx + 1) % f.choices.size();
+                apply_value(sel, f.choices[idx]);
+            } else {
+                editing = true;
+                edit_buf = field_value(sel);
+                if (edit_buf == "(unset)") edit_buf.clear();
+            }
+        }
+
+        // Commit the edit buffer to the selected field.
+        void commit_edit() {
+            if (sel < 0 || sel >= static_cast<int>(fields.size())) return;
+            if (fields[sel].type == FType::Choice) return; // already applied
+            apply_value(sel, edit_buf.empty() ? "(unset)" : edit_buf);
+            editing = false;
+            edit_buf.clear();
+        }
+
+        // Cancel editing (restore original value).
+        void cancel_edit() {
+            editing = false;
+            edit_buf.clear();
+        }
+
+    private:
+        static std::string float_str(double v) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "%.1f", v);
+            return buf;
+        }
+    } settings_screen;
+
     // Non-modal @-completion popup, anchored above the input line. Recomputed by
     // the Input's on_change from input_content + cursor_pos; read in the renderer
     // and CatchEvent. Guarded by state_mtx like picker.
@@ -2148,6 +2319,35 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                  }
              },
              [&] { return syntax_theme_names(); }},
+            {"/settings", {},
+             [&](std::string_view /*arg*/) {
+                 std::lock_guard lk(state_mtx);
+                 if (settings_screen.active) {
+                     // Close: persist if dirty.
+                     settings_screen.active = false;
+                     settings_screen.editing = false;
+                     if (settings_screen.dirty && !info.home.empty()) {
+                         save_settings(info.home, settings_screen.draft);
+                         state.push_info("settings saved to " + info.home +
+                                         "/settings.toml");
+                         // Reload profiles and theme from the saved settings.
+                         profiles = load_settings(info.home).profiles;
+                         if (profiles.empty()) profiles = default_profiles();
+                         model_names = rebuild_model_names();
+                         if (auto t = syntax_theme_from_name(
+                                 settings_screen.draft.theme))
+                             state.set_syntax_theme(*t);
+                     }
+                 } else {
+                     // Open: populate from current settings.
+                     Settings s = load_settings(info.home);
+                     settings_screen.rebuild(s, info.model, info.provider);
+                     settings_screen.active = true;
+                     settings_screen.sel = 0;
+                     settings_screen.dirty = false;
+                 }
+             },
+             {}},
         },
         &input_content, &cursor_pos, &state_mtx, &model_complete);
 
@@ -2651,8 +2851,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         Element footer =
             zone == Zone::Input
                 ? text(" Enter send · ↑↓ history · @ attach · /effort /thinking "
-                       "/temp /model /provider /theme /compact · Tab panes · "
-                       "PgUp/PgDn scroll · Esc stop · F2 reasoning · "
+                       "/temp /model /provider /settings /theme /compact · "
+                       "Tab panes · PgUp/PgDn scroll · Esc stop · F2 reasoning · "
                        "Ctrl+C twice quit") | dim
                 : text(" ↑↓ select · ←→ fold sub-agent · Enter inspect · "
                        "Ctrl+Y copy · PgUp/PgDn scroll · Tab next pane "
@@ -2770,6 +2970,48 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                              separator(),
                              text("↑↓ select · Enter choose · Esc cancel") | dim | center})) |
                 size(WIDTH, LESS_THAN, 100) | clear_under | center;
+            return dbox({page | dim, dialog});
+        }
+        // --- Settings editor modal ------------------------------------------
+        if (settings_screen.active) {
+            Elements rows;
+            const int n = static_cast<int>(settings_screen.fields.size());
+            for (int i = 0; i < n; ++i) {
+                const auto& f = settings_screen.fields[i];
+                std::string val = sanitize_tui_text(settings_screen.field_value(i));
+                // Show edit buffer when editing this row.
+                if (settings_screen.editing && i == settings_screen.sel) {
+                    std::string cursor =
+                        (frame_now / 16 % 2 == 0) ? "▌" : " ";
+                    val = sanitize_tui_text(settings_screen.edit_buf) + cursor;
+                }
+                std::string row_text =
+                    "  " + f.label + ": " + val + "  ";
+                Element row = text(row_text);
+                if (i == settings_screen.sel)
+                    row = row | inverted;
+                rows.push_back(row);
+            }
+            if (rows.empty())
+                rows.push_back(text("  (no settings)  ") | dim);
+            std::string help;
+            if (settings_screen.editing) {
+                const auto& f = settings_screen.fields[settings_screen.sel];
+                if (f.type == SettingsScreen::FType::Choice) {
+                    help = "Enter cycles · Esc cancel";
+                } else {
+                    help = "type value · Enter confirm · Esc cancel";
+                }
+            } else {
+                help = "↑↓ select · Enter edit · Esc close";
+            }
+            Element dialog =
+                window(text(" settings ") | bold,
+                       vbox({vbox(std::move(rows)) | vscroll_indicator |
+                                 yframe | size(HEIGHT, LESS_THAN, 20),
+                             separator(),
+                             text(help) | dim | center})) |
+                size(WIDTH, LESS_THAN, 80) | clear_under | center;
             return dbox({page | dim, dialog});
         }
         if (detail_max) {
@@ -2967,6 +3209,67 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 }
                 return true;  // swallow everything else
             }
+        }
+        // --- Settings editor modal: keyboard navigation ---------------------
+        if (settings_screen.active) {
+            if (settings_screen.editing) {
+                // Inline text edit mode.
+                if (e == Event::Return) {
+                    settings_screen.commit_edit();
+                    post();
+                    return true;
+                }
+                if (e == Event::Escape) {
+                    settings_screen.cancel_edit();
+                    post();
+                    return true;
+                }
+                if (e == Event::Backspace) {
+                    if (!settings_screen.edit_buf.empty())
+                        settings_screen.edit_buf.pop_back();
+                    return true;
+                }
+                if (e.is_character()) {
+                    settings_screen.edit_buf += e.character();
+                    return true;
+                }
+                return true;  // swallow everything else while editing
+            }
+            // Navigation mode.
+            if (e == Event::ArrowUp) {
+                if (settings_screen.sel > 0) --settings_screen.sel;
+                return true;
+            }
+            if (e == Event::ArrowDown) {
+                if (settings_screen.sel + 1 <
+                    static_cast<int>(settings_screen.fields.size()))
+                    ++settings_screen.sel;
+                return true;
+            }
+            if (e == Event::Return) {
+                settings_screen.begin_edit();
+                post();
+                return true;
+            }
+            if (e == Event::Escape) {
+                // Close: persist if dirty.
+                settings_screen.active = false;
+                if (settings_screen.dirty && !info.home.empty()) {
+                    save_settings(info.home, settings_screen.draft);
+                    state.push_info("settings saved to " + info.home +
+                                    "/settings.toml");
+                    // Reload profiles and theme.
+                    profiles = load_settings(info.home).profiles;
+                    if (profiles.empty()) profiles = default_profiles();
+                    model_names = rebuild_model_names();
+                    if (auto t = syntax_theme_from_name(
+                            settings_screen.draft.theme))
+                        state.set_syntax_theme(*t);
+                }
+                post();
+                return true;
+            }
+            return true;  // swallow everything else while the modal is up
         }
         // While the picker overlay is up, navigate it and swallow other keys.
         if (picker.active) {
