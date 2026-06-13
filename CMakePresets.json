@@ -1,0 +1,21 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    { "name": "dev", "generator": "Ninja", "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "FLAGENT_BUNDLED_CURL": "OFF", "BUILD_TESTING": "ON",
+        "FLAGENT_WERROR": "ON", "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" } },
+    { "name": "asan", "inherits": "dev", "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": { "FLAGENT_SANITIZE": "address;undefined",
+        "CMAKE_BUILD_TYPE": "Debug", "FLAGENT_WERROR": "OFF" } },
+    { "name": "tsan", "inherits": "dev", "binaryDir": "${sourceDir}/build-tsan",
+      "cacheVariables": { "FLAGENT_SANITIZE": "thread",
+        "CMAKE_BUILD_TYPE": "Debug", "FLAGENT_WERROR": "OFF" } }
+  ],
+  "testPresets": [
+    { "name": "dev",  "configurePreset": "dev",  "output": {"outputOnFailure": true} },
+    { "name": "asan", "configurePreset": "asan", "output": {"outputOnFailure": true} },
+    { "name": "tsan", "configurePreset": "tsan", "output": {"outputOnFailure": true} }
+  ]
+}

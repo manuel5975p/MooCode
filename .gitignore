@@ -1,0 +1,24 @@
+# Build directories
+build/
+build-*/
+.deps-cache/
+.cache/
+Testing/
+docs/
+# CMake / compilation artifacts
+compile_commands.json
+
+# Claude / planning docs
+.claude/
+CLAUDE.md
+analysis_*.md
+masterplan_*.md
+plan_*.md
+*_plan.md
+llm.md
+dummy.md
+
+# Editor / OS
+*.swp
+*~
+.DS_Store
