@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="darkBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1e4a7a"/>
+      <stop offset="1" stop-color="#1e4a7a"/>
+    </linearGradient>
+    <linearGradient id="lightBlue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a8fd6"/>
+      <stop offset="1" stop-color="#3a8fd6"/>
+    </linearGradient>
+  </defs>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="22">
+
+    <!-- Horns (dark blue) -->
+    <path d="M 330 195
+             C 290 110, 260 70, 210 50
+             C 215 120, 240 180, 295 245 Z"
+          fill="url(#darkBlue)"/>
+    <path d="M 694 195
+             C 734 110, 764 70, 814 50
+             C 809 120, 784 180, 729 245 Z"
+          fill="url(#darkBlue)"/>
+
+    <!-- Ears (dark blue) -->
+    <path d="M 250 410
+             C 150 400, 80 430, 50 490
+             C 90 540, 170 555, 260 535
+             Z"
+          fill="url(#darkBlue)"/>
+    <path d="M 774 410
+             C 874 400, 944 430, 974 490
+             C 934 540, 854 555, 764 535
+             Z"
+          fill="url(#darkBlue)"/>
+
+    <!-- Head outline (dark blue) -->
+    <path d="M 260 540
+             C 240 460, 250 380, 300 320
+             C 360 260, 460 240, 512 240
+             C 564 240, 664 260, 724 320
+             C 774 380, 784 460, 764 540
+             L 740 540
+             L 740 620
+             L 700 620
+             L 700 660
+             L 660 660
+             L 660 690
+             L 364 690
+             L 364 660
+             L 324 660
+             L 324 620
+             L 284 620
+             L 284 540 Z"
+          fill="none" stroke="url(#darkBlue)"/>
+
+    <!-- Right curly brace (snout right edge, light blue) -->
+    <path d="M 612 360
+             C 645 380, 660 420, 660 460
+             C 660 500, 645 520, 612 540
+             C 645 540, 660 560, 660 590
+             C 660 620, 645 640, 612 660"
+          stroke="url(#lightBlue)"/>
+
+    <!-- Left curly brace (snout left edge, light blue) -->
+    <path d="M 412 360
+             C 379 380, 364 420, 364 460
+             C 364 500, 379 520, 412 540
+             C 379 540, 364 560, 364 590
+             C 364 620, 379 640, 412 660"
+          stroke="url(#lightBlue)"/>
+
+    <!-- Code bracket "<" left eye (light blue) -->
+    <path d="M 470 380 L 415 450 L 470 520" stroke="url(#lightBlue)" stroke-width="32"/>
+    <!-- Code bracket ">" right eye (light blue) -->
+    <path d="M 554 380 L 609 450 L 554 520" stroke="url(#lightBlue)" stroke-width="32"/>
+
+    <!-- Left eye pupil (dark blue) -->
+    <circle cx="395" cy="470" r="22" fill="url(#darkBlue)" stroke="none"/>
+    <!-- Right eye pupil (dark blue) -->
+    <circle cx="629" cy="470" r="22" fill="url(#darkBlue)" stroke="none"/>
+
+    <!-- Snout/muzzle box (dark blue outline) -->
+    <path d="M 360 700
+             L 360 870
+             C 360 920, 410 940, 512 940
+             C 614 940, 664 920, 664 870
+             L 664 700 Z"
+          stroke="url(#darkBlue)"/>
+
+    <!-- Nostrils (dark blue) -->
+    <ellipse cx="445" cy="800" rx="22" ry="38" fill="url(#darkBlue)" stroke="none"
+             transform="rotate(-15 445 800)"/>
+    <ellipse cx="579" cy="800" rx="22" ry="38" fill="url(#darkBlue)" stroke="none"
+             transform="rotate(15 579 800)"/>
+
+    <!-- Semicolon on snout (light blue) -->
+    <circle cx="512" cy="790" r="14" fill="url(#lightBlue)" stroke="none"/>
+    <path d="M 504 815 C 504 850, 524 850, 524 830 C 524 850, 504 850, 504 830 L 504 880"
+          stroke="url(#lightBlue)" stroke-width="14"/>
+
+  </g>
+</svg>
