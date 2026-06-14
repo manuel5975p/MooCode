@@ -730,6 +730,8 @@ int main(int argc, char** argv) {
         gp.thinking = false;
     else if (!gp.thinking.has_value() && settings.thinking >= 0)
         gp.thinking = settings.thinking != 0;
+    // Default thinking ON when nothing explicitly configured.
+    if (!gp.thinking.has_value()) gp.thinking = true;
     if (max_tokens > 0) gp.max_tokens = max_tokens;
 
     // Build the backend by wire format via the shared factory (single source of

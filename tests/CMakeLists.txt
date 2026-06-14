@@ -71,6 +71,11 @@ set_tests_properties(test_tui_worker PROPERTIES TIMEOUT 30)
 flagent_add_test(test_tui_slash test_tui_slash.cpp agent_tui)
 set_tests_properties(test_tui_slash PROPERTIES TIMEOUT 30)
 
+# test_settings_editor: screen-free settings form (FieldDef, apply_value,
+# display_value, navigation, SettingsForm state machine)
+flagent_add_test(test_settings_editor test_settings_editor.cpp agent_tui)
+set_tests_properties(test_settings_editor PROPERTIES TIMEOUT 30)
+
 # test_question: QuestionGate sync + ask_user tool parsing
 flagent_add_test(test_question test_question.cpp agent_question)
 target_link_libraries(test_question PRIVATE Threads::Threads)

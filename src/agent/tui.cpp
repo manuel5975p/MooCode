@@ -27,6 +27,7 @@
 #include "agent/persist.hpp"
 #include "agent/provider_factory.hpp"  // ProviderConnection, make_provider
 #include "agent/strutil.hpp"           // to_lower
+#include "agent/settings_editor.hpp"  // SettingsForm, FieldDef, FormAction
 #include "agent/syntax_highlight.hpp"  // highlight_block, language_from_tag
 #include "agent/tui_slash.hpp"         // parse_effort/_thinking/_temp/_theme
 #include "agent/tui_text.hpp"          // sanitize_tui_text
@@ -1674,177 +1675,9 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     } question_modal;
     // Track pending state across frames so we can reset sel on new questions.
     bool question_was_pending = false;
-
-    // Settings editor modal: opened via /settings. Shows every settings.toml
-    // field as a navigable row; Enter edits the selected field inline. Esc
-    // cancels the edit or closes the modal; changes are persisted on close
-    // when any field was modified. Guarded by state_mtx.
-    struct SettingsScreen {
-        bool active = false;
-        int sel = 0;           // which row is selected
-        bool editing = false;  // inline edit mode for the selected field
-        std::string edit_buf;  // edit buffer (string fields and int/double)
-        // Types of fields in the settings list.
-        enum class FType { String, Int, Choice, Double };
-        struct Field {
-            std::string label;               // display name
-            FType type;
-            std::vector<std::string> choices; // for Choice; empty => free text
-        };
-        std::vector<Field> fields;
-        bool dirty = false;  // true when any field was modified
-
-        // The working copy of settings; mutated by field setters.
-        Settings draft;
-
-        // Live values for display fallback (model when unset, etc.).
-        std::string live_model;
-        std::string live_provider;
-
-        // Read the current display value of field idx.
-        std::string field_value(int idx) const {
-            if (idx < 0 || idx >= static_cast<int>(fields.size())) return {};
-            const auto& f = fields[idx];
-            if (f.label == "provider")
-                return draft.provider.empty() ? "auto" : draft.provider;
-            if (f.label == "model")
-                return draft.model.empty() ? live_model : draft.model;
-            if (f.label == "base_url") return draft.base_url;
-            if (f.label == "context_window")
-                return draft.context_window > 0
-                           ? std::to_string(draft.context_window) : "(unset)";
-            if (f.label == "max_iterations")
-                return draft.max_iterations > 0
-                           ? std::to_string(draft.max_iterations) : "(unset)";
-            if (f.label == "max_tokens")
-                return draft.max_tokens > 0
-                           ? std::to_string(draft.max_tokens) : "(unset)";
-            if (f.label == "effort")
-                return draft.effort.empty() ? "(unset)" : draft.effort;
-            if (f.label == "temperature")
-                return draft.temperature < 0
-                           ? "(unset)"
-                           : float_str(draft.temperature);
-            if (f.label == "thinking")
-                return draft.thinking < 0  ? "unset"
-                       : draft.thinking > 0 ? "on" : "off";
-            if (f.label == "rtk")
-                return draft.rtk < 0  ? "unset"
-                       : draft.rtk > 0 ? "on" : "off";
-            if (f.label == "theme")
-                return draft.theme.empty() ? "(unset)" : draft.theme;
-            if (f.label == "profile")
-                return draft.profile.empty() ? "(none)" : draft.profile;
-            return {};
-        }
-
-        // Apply a new value to field idx. Returns true on success.
-        bool apply_value(int idx, const std::string& val) {
-            if (idx < 0 || idx >= static_cast<int>(fields.size())) return false;
-            const auto& f = fields[idx];
-            dirty = true;
-            if (f.label == "provider")
-                draft.provider = (val == "auto") ? "" : val;
-            else if (f.label == "model")
-                draft.model = val;
-            else if (f.label == "base_url")
-                draft.base_url = val;
-            else if (f.label == "context_window")
-                draft.context_window = std::max(0, std::atoi(val.c_str()));
-            else if (f.label == "max_iterations")
-                draft.max_iterations = std::max(0, std::atoi(val.c_str()));
-            else if (f.label == "max_tokens")
-                draft.max_tokens = std::max(0, std::atoi(val.c_str()));
-            else if (f.label == "effort")
-                draft.effort = (val == "(unset)") ? "" : val;
-            else if (f.label == "temperature") {
-                if (val == "(unset)" || val.empty()) draft.temperature = -1;
-                else draft.temperature = std::strtod(val.c_str(), nullptr);
-            } else if (f.label == "thinking") {
-                if (val == "on") draft.thinking = 1;
-                else if (val == "off") draft.thinking = 0;
-                else draft.thinking = -1;
-            } else if (f.label == "rtk") {
-                if (val == "on") draft.rtk = 1;
-                else if (val == "off") draft.rtk = 0;
-                else draft.rtk = -1;
-            } else if (f.label == "theme")
-                draft.theme = (val == "(unset)") ? "" : val;
-            else if (f.label == "profile")
-                draft.profile = (val == "(none)") ? "" : val;
-            else
-                return false;
-            return true;
-        }
-
-        // Populate the field list (called when opening the modal).
-        void rebuild(const Settings& current, const std::string& lm,
-                     const std::string& lp) {
-            draft = current;
-            live_model = lm;
-            live_provider = lp;
-            fields.clear();
-            fields.push_back({"provider", FType::Choice,
-                              {"openai", "anthropic", "auto"}});
-            fields.push_back({"model", FType::String, {}});
-            fields.push_back({"base_url", FType::String, {}});
-            fields.push_back({"context_window", FType::Int, {}});
-            fields.push_back({"max_iterations", FType::Int, {}});
-            fields.push_back({"max_tokens", FType::Int, {}});
-            fields.push_back({"effort", FType::Choice,
-                              {"(unset)", "none", "low", "medium", "high"}});
-            fields.push_back({"temperature", FType::Double, {}});
-            fields.push_back({"thinking", FType::Choice,
-                              {"unset", "on", "off"}});
-            fields.push_back({"rtk", FType::Choice,
-                              {"unset", "on", "off"}});
-            fields.push_back({"theme", FType::Choice,
-                              {"(unset)", "default", "mono", "vivid", "none"}});
-            fields.push_back({"profile", FType::String, {}});
-        }
-
-        // Begin editing the selected field: prime edit_buf and enter Choice
-        // cycling for Choice fields.
-        void begin_edit() {
-            if (sel < 0 || sel >= static_cast<int>(fields.size())) return;
-            const auto& f = fields[sel];
-            if (f.type == FType::Choice) {
-                // Cycle to next choice on each Enter press.
-                const std::string cur = field_value(sel);
-                auto it = std::ranges::find(f.choices, cur);
-                std::size_t idx = (it == f.choices.end()) ? 0
-                    : static_cast<std::size_t>(it - f.choices.begin());
-                idx = (idx + 1) % f.choices.size();
-                apply_value(sel, f.choices[idx]);
-            } else {
-                editing = true;
-                edit_buf = field_value(sel);
-                if (edit_buf == "(unset)") edit_buf.clear();
-            }
-        }
-
-        // Commit the edit buffer to the selected field.
-        void commit_edit() {
-            if (sel < 0 || sel >= static_cast<int>(fields.size())) return;
-            if (fields[sel].type == FType::Choice) return; // already applied
-            apply_value(sel, edit_buf.empty() ? "(unset)" : edit_buf);
-            editing = false;
-            edit_buf.clear();
-        }
-
-        // Cancel editing (restore original value).
-        void cancel_edit() {
-            editing = false;
-            edit_buf.clear();
-        }
-
-    private:
-        static std::string float_str(double v) {
-            char buf[64];
-            std::snprintf(buf, sizeof buf, "%.1f", v);
-            return buf;
-        }
-    } settings_screen;
+    // Settings editor form state, managed by the /settings slash command.
+    // The screen-free SettingsForm lives in settings_editor.{hpp,cpp}.
+    SettingsForm settings_form;
 
     // Non-modal @-completion popup, anchored above the input line. Recomputed by
     // the Input's on_change from input_content + cursor_pos; read in the renderer
@@ -2322,12 +2155,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             {"/settings", {},
              [&](std::string_view /*arg*/) {
                  std::lock_guard lk(state_mtx);
-                 if (settings_screen.active) {
+                 if (settings_form.active) {
                      // Close: persist if dirty.
-                     settings_screen.active = false;
-                     settings_screen.editing = false;
-                     if (settings_screen.dirty && !info.home.empty()) {
-                         save_settings(info.home, settings_screen.draft);
+                     FormAction act = settings_form_close(settings_form);
+                     if (act == FormAction::Saved && !info.home.empty()) {
+                         save_settings(info.home, settings_form.draft);
                          state.push_info("settings saved to " + info.home +
                                          "/settings.toml");
                          // Reload profiles and theme from the saved settings.
@@ -2335,16 +2167,14 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                          if (profiles.empty()) profiles = default_profiles();
                          model_names = rebuild_model_names();
                          if (auto t = syntax_theme_from_name(
-                                 settings_screen.draft.theme))
+                                 settings_form.draft.theme))
                              state.set_syntax_theme(*t);
                      }
                  } else {
                      // Open: populate from current settings.
                      Settings s = load_settings(info.home);
-                     settings_screen.rebuild(s, info.model, info.provider);
-                     settings_screen.active = true;
-                     settings_screen.sel = 0;
-                     settings_screen.dirty = false;
+                     settings_form = settings_form_build(s);
+                     settings_form.active = true;
                  }
              },
              {}},
@@ -2973,42 +2803,156 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             return dbox({page | dim, dialog});
         }
         // --- Settings editor modal ------------------------------------------
-        if (settings_screen.active) {
-            Elements rows;
-            const int n = static_cast<int>(settings_screen.fields.size());
-            for (int i = 0; i < n; ++i) {
-                const auto& f = settings_screen.fields[i];
-                std::string val = sanitize_tui_text(settings_screen.field_value(i));
-                // Show edit buffer when editing this row.
-                if (settings_screen.editing && i == settings_screen.sel) {
-                    std::string cursor =
-                        (frame_now / 16 % 2 == 0) ? "▌" : " ";
-                    val = sanitize_tui_text(settings_screen.edit_buf) + cursor;
-                }
-                std::string row_text =
-                    "  " + f.label + ": " + val + "  ";
-                Element row = text(row_text);
-                if (i == settings_screen.sel)
-                    row = row | inverted;
-                rows.push_back(row);
-            }
-            if (rows.empty())
-                rows.push_back(text("  (no settings)  ") | dim);
+        if (settings_form.active) {
+            // Tab bar
+            auto make_tab = [&](SettingsForm::Tab t, std::string label) {
+                Element el = text(" " + label + " ") | border;
+                if (t == settings_form.current_tab) el = el | inverted;
+                return el;
+            };
+            Element tab_bar = hbox({
+                make_tab(SettingsForm::Tab::General,   "General"),
+                make_tab(SettingsForm::Tab::Profiles,  "Profiles"),
+                make_tab(SettingsForm::Tab::Credentials, "Credentials"),
+            }) | center;
+
+            // Tab content
+            Element tab_content;
             std::string help;
-            if (settings_screen.editing) {
-                const auto& f = settings_screen.fields[settings_screen.sel];
-                if (f.type == SettingsScreen::FType::Choice) {
-                    help = "Enter cycles · Esc cancel";
-                } else {
-                    help = "type value · Enter confirm · Esc cancel";
+
+            if (settings_form.current_tab == SettingsForm::Tab::General) {
+                Elements rows;
+                const int n = static_cast<int>(settings_form.fields.size());
+                for (int i = 0; i < n; ++i) {
+                    const auto& f = settings_form.fields[i];
+                    std::string val = sanitize_tui_text(
+                        settings_form.display_value(i, info.model, info.provider));
+                    if (settings_form.editing && i == settings_form.sel) {
+                        std::string cursor =
+                            (frame_now / 16 % 2 == 0) ? "▌" : " ";
+                        val = sanitize_tui_text(settings_form.edit_buf) + cursor;
+                    }
+                    std::string row_text = "  " + f.label + ": " + val + "  ";
+                    Element row = text(row_text);
+                    if (i == settings_form.sel) row = row | inverted;
+                    rows.push_back(row);
                 }
+                if (rows.empty())
+                    rows.push_back(text("  (no settings)  ") | dim);
+                if (settings_form.editing) {
+                    const auto& f = settings_form.fields[settings_form.sel];
+                    if (f.type == FieldDef::Type::Choice ||
+                        f.type == FieldDef::Type::BoolToggle)
+                        help = "Enter cycles · Esc cancel";
+                    else
+                        help = "type value · Enter confirm · Esc cancel";
+                } else {
+                    help = "← → tabs · ↑↓ select · Enter edit · Esc close";
+                }
+                tab_content = vbox(std::move(rows));
+            } else if (settings_form.current_tab == SettingsForm::Tab::Profiles) {
+                Elements rows;
+                const auto& pe = settings_form.profile_editor;
+                if (pe.editing_profile) {
+                    // Profile detail sub-editor
+                    const Profile* p = (pe.sel >= 0 && pe.sel < static_cast<int>(pe.profiles.size()))
+                        ? &pe.profiles[pe.sel] : nullptr;
+                    rows.push_back(text("  profile: " + (p ? p->name : "")) | bold);
+                    rows.push_back(text("  ─────────────────────────────") | dim);
+                    if (p) {
+                        for (int i = 0; i < kNumProfileFields; ++i) {
+                            std::string val = profile_field_value(*p, i);
+                            if (pe.profile_edit_text_mode && pe.edit_field_idx == i)
+                                val = sanitize_tui_text(pe.edit_buf) +
+                                    ((frame_now / 16 % 2 == 0) ? "▌" : " ");
+                            else
+                                val = sanitize_tui_text(val);
+                            Element fr = text("  " + profile_field_label(i) + ": " + val);
+                            if (pe.profile_field_sel == i) fr = fr | inverted;
+                            rows.push_back(fr);
+                        }
+                        // Models row
+                        {
+                            std::string ml = "models: " + std::to_string(p->models.size()) + " model(s)";
+                            Element mr = text("  " + ml);
+                            if (pe.profile_field_sel == kNumProfileFields) mr = mr | inverted;
+                            rows.push_back(mr);
+                        }
+                        if (pe.editing_models) {
+                            rows.push_back(text("  ─────────────────────────────") | dim);
+                            for (int mi = 0; mi < static_cast<int>(p->models.size()); ++mi) {
+                                std::string mv = sanitize_tui_text(p->models[mi]);
+                                Element mr = text("  " + mv);
+                                if (pe.model_sel == mi) mr = mr | inverted;
+                                rows.push_back(mr);
+                            }
+                            rows.push_back(text("  [+ add model]") | dim);
+                        }
+                    }
+                    if (pe.profile_edit_text_mode)
+                        help = "type value · Enter confirm · Esc cancel";
+                    else if (pe.editing_models)
+                        help = "↑↓ select model · Enter edit · a add · d delete · Esc back";
+                    else
+                        help = "↑↓ select field · Enter edit / open models · Esc back";
+                } else {
+                    // Profile list
+                    for (int i = 0; i < static_cast<int>(pe.profiles.size()); ++i) {
+                        const auto& p = pe.profiles[i];
+                        std::string marker = (settings_form.draft.profile == p.name) ? "* " : "  ";
+                        std::string buf = marker + p.name + "  " +
+                            (p.kind.empty() ? "auto" : p.kind) + "  " + p.base_url;
+                        Element row = text(sanitize_tui_text(buf));
+                        if (i == pe.sel) row = row | inverted;
+                        rows.push_back(row);
+                    }
+                    rows.push_back(text("  [+ Add Profile]") | dim);
+                    help = "← → tabs · ↑↓ select · Enter edit · a add · d delete · Esc close";
+                }
+                tab_content = vbox(std::move(rows));
             } else {
-                help = "↑↓ select · Enter edit · Esc close";
+                // Credentials tab (stub for Phase 3)
+                const auto& ce = settings_form.credential_editor;
+                if (ce.profile_names.empty()) {
+                    tab_content = text("  (no profiles configured — add profiles first)") | dim | center;
+                } else {
+                    Elements rows;
+                    for (int i = 0; i < static_cast<int>(ce.profile_names.size()); ++i) {
+                        const auto& name = ce.profile_names[i];
+                        std::string key_disp = ce.display(name);
+                        std::string buf = "  " + name + ":  " + key_disp;
+                        Element row = text(sanitize_tui_text(buf));
+                        if (i == ce.sel) row = row | inverted;
+                        rows.push_back(row);
+                    }
+                    if (ce.editing_key) {
+                        // Show masked input: show the raw edit buf length as asterisks
+                        std::string masked(ce.key_edit_buf.size(), '*');
+                        rows.push_back(text("  key: " + masked +
+                            ((frame_now / 16 % 2 == 0) ? "▌" : " ")));
+                    }
+                    tab_content = vbox(std::move(rows));
+                }
+                if (ce.editing_key)
+                    help = "type key · Enter save · Esc cancel";
+                else
+                    help = "← → tabs · ↑↓ select · Enter set key · d delete · Esc close";
             }
+
+            // Warning banner for malformed file
+            Element banner = emptyElement();
+            if (settings_form.malformed_file) {
+                banner = text(" ⚠ " + sanitize_tui_text(settings_form.malformed_msg) + " ") |
+                         bgcolor(Color::Yellow) | color(Color::Black) | center;
+            }
+
             Element dialog =
                 window(text(" settings ") | bold,
-                       vbox({vbox(std::move(rows)) | vscroll_indicator |
-                                 yframe | size(HEIGHT, LESS_THAN, 20),
+                       vbox({banner,
+                             tab_bar,
+                             separator(),
+                             tab_content | vscroll_indicator | yframe |
+                                 size(HEIGHT, LESS_THAN, 18),
                              separator(),
                              text(help) | dim | center})) |
                 size(WIDTH, LESS_THAN, 80) | clear_under | center;
@@ -3211,64 +3155,224 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             }
         }
         // --- Settings editor modal: keyboard navigation ---------------------
-        if (settings_screen.active) {
-            if (settings_screen.editing) {
-                // Inline text edit mode.
-                if (e == Event::Return) {
-                    settings_screen.commit_edit();
-                    post();
-                    return true;
+        if (settings_form.active) {
+            // Tab switching: left/right arrows.
+            if (e == Event::ArrowLeft) {
+                settings_form.prev_tab();
+                if (settings_form.current_tab == SettingsForm::Tab::Profiles &&
+                    !settings_form.profile_editor.active)
+                    settings_form.open_profile_editor();
+                if (settings_form.current_tab == SettingsForm::Tab::Credentials &&
+                    !settings_form.credential_editor.active) {
+                    settings_form.credential_editor = credential_editor_build(
+                        credentials, settings_form.draft.profiles);
+                    settings_form.credential_editor.active = true;
                 }
-                if (e == Event::Escape) {
-                    settings_screen.cancel_edit();
-                    post();
-                    return true;
+                post(); return true;
+            }
+            if (e == Event::ArrowRight) {
+                settings_form.next_tab();
+                if (settings_form.current_tab == SettingsForm::Tab::Profiles &&
+                    !settings_form.profile_editor.active)
+                    settings_form.open_profile_editor();
+                if (settings_form.current_tab == SettingsForm::Tab::Credentials &&
+                    !settings_form.credential_editor.active) {
+                    settings_form.credential_editor = credential_editor_build(
+                        credentials, settings_form.draft.profiles);
+                    settings_form.credential_editor.active = true;
                 }
-                if (e == Event::Backspace) {
-                    if (!settings_screen.edit_buf.empty())
-                        settings_screen.edit_buf.pop_back();
-                    return true;
-                }
-                if (e.is_character()) {
-                    settings_screen.edit_buf += e.character();
-                    return true;
-                }
-                return true;  // swallow everything else while editing
+                post(); return true;
             }
-            // Navigation mode.
-            if (e == Event::ArrowUp) {
-                if (settings_screen.sel > 0) --settings_screen.sel;
-                return true;
-            }
-            if (e == Event::ArrowDown) {
-                if (settings_screen.sel + 1 <
-                    static_cast<int>(settings_screen.fields.size()))
-                    ++settings_screen.sel;
-                return true;
-            }
-            if (e == Event::Return) {
-                settings_screen.begin_edit();
-                post();
-                return true;
-            }
+            auto& sf = settings_form;
+            auto& pe = sf.profile_editor;
+            auto& ce = sf.credential_editor;
+
+            // --- Global Escape: close the whole modal ---
             if (e == Event::Escape) {
-                // Close: persist if dirty.
-                settings_screen.active = false;
-                if (settings_screen.dirty && !info.home.empty()) {
-                    save_settings(info.home, settings_screen.draft);
-                    state.push_info("settings saved to " + info.home +
-                                    "/settings.toml");
-                    // Reload profiles and theme.
+                // If in a sub-editor, pop one level first.
+                if (sf.current_tab == SettingsForm::Tab::Profiles) {
+                    if (pe.editing_models) {
+                        pe.editing_models = false; post(); return true;
+                    }
+                    if (pe.profile_edit_text_mode) {
+                        pe.cancel_profile_field_edit(); post(); return true;
+                    }
+                    if (pe.editing_profile) {
+                        pe.cancel_profile_edit(); post(); return true;
+                    }
+                }
+                if (sf.current_tab == SettingsForm::Tab::Credentials) {
+                    if (ce.editing_key) {
+                        ce.cancel_key(); post(); return true;
+                    }
+                }
+                if (sf.current_tab == SettingsForm::Tab::General) {
+                    if (sf.editing) {
+                        sf.cancel_edit(); post(); return true;
+                    }
+                }
+                // Close the whole modal.
+                FormAction act = settings_form_close(sf);
+                if (act == FormAction::Saved && !info.home.empty()) {
+                    save_settings(info.home, sf.draft);
+                    state.push_info("settings saved to " + info.home + "/settings.toml");
                     profiles = load_settings(info.home).profiles;
                     if (profiles.empty()) profiles = default_profiles();
                     model_names = rebuild_model_names();
-                    if (auto t = syntax_theme_from_name(
-                            settings_screen.draft.theme))
+                    if (auto t = syntax_theme_from_name(sf.draft.theme))
                         state.set_syntax_theme(*t);
                 }
-                post();
+                // Also save credentials if dirty.
+                if (ce.dirty && !info.home.empty()) {
+                    for (const auto& name : ce.deleted) {
+                        save_credential(info.home, name, "");
+                        credentials.erase(name);
+                    }
+                    for (const auto& [name, key] : ce.credentials) {
+                        if (!key.empty()) {
+                            save_credential(info.home, name, key);
+                            credentials[name] = key;
+                        }
+                    }
+                }
+                post(); return true;
+            }
+
+            // --- General tab editing ---
+            if (sf.current_tab == SettingsForm::Tab::General) {
+                if (sf.editing) {
+                    if (e == Event::Return) { sf.commit_edit(); post(); return true; }
+                    if (e == Event::Backspace) {
+                        if (!sf.edit_buf.empty()) sf.edit_buf.pop_back();
+                        return true;
+                    }
+                    if (e.is_character()) {
+                        if (sf.edit_buf.size() < 4096) sf.edit_buf += e.character();
+                        return true;
+                    }
+                    return true;
+                }
+                if (e == Event::ArrowUp) { sf.move_up(); return true; }
+                if (e == Event::ArrowDown) { sf.move_down(); return true; }
+                if (e == Event::Return) { sf.begin_edit(); post(); return true; }
                 return true;
             }
+
+            // --- Profiles tab ---
+            if (sf.current_tab == SettingsForm::Tab::Profiles) {
+                // Profile list mode
+                if (!pe.editing_profile) {
+                    if (e == Event::ArrowUp) { pe.move_up(); post(); return true; }
+                    if (e == Event::ArrowDown) { pe.move_down(); post(); return true; }
+                    if (e == Event::Return) {
+                        pe.begin_edit_profile(); post(); return true;
+                    }
+                    if (e == Event::Character('a') || e == Event::Character('A')) {
+                        pe.add_profile(); sf.dirty = true; post(); return true;
+                    }
+                    if (e == Event::Character('d') || e == Event::Character('D')) {
+                        if (pe.sel >= 0 && pe.sel < static_cast<int>(pe.profiles.size())) {
+                            if (sf.draft.profile == pe.profiles[pe.sel].name)
+                                sf.draft.profile.clear();
+                            pe.delete_profile(pe.sel);
+                            sf.dirty = true;
+                        }
+                        post(); return true;
+                    }
+                    return true;
+                }
+
+                // Profile detail mode: editing_profile == true
+                if (pe.editing_models) {
+                    if (e == Event::ArrowUp) {
+                        if (pe.model_sel > 0) --pe.model_sel;
+                        return true;
+                    }
+                    if (e == Event::ArrowDown) {
+                        const auto& models = pe.profiles[pe.sel].models;
+                        if (pe.model_sel + 1 < static_cast<int>(models.size()) + 1)
+                            ++pe.model_sel;
+                        return true;
+                    }
+                    if (e == Event::Return) {
+                        const auto& models = pe.profiles[pe.sel].models;
+                        if (pe.model_sel < static_cast<int>(models.size())) {
+                            pe.begin_edit_model(); post(); return true;
+                        } else {
+                            pe.add_model(); post(); return true;
+                        }
+                    }
+                    if (e == Event::Character('a') || e == Event::Character('A')) {
+                        pe.add_model(); post(); return true;
+                    }
+                    if (e == Event::Character('d') || e == Event::Character('D')) {
+                        pe.delete_model(pe.model_sel); post(); return true;
+                    }
+                    if (e == Event::Backspace) {
+                        if (!pe.model_edit_buf.empty()) pe.model_edit_buf.pop_back();
+                        return true;
+                    }
+                    if (e.is_character()) {
+                        if (pe.model_edit_buf.size() < 256)
+                            pe.model_edit_buf += e.character();
+                        return true;
+                    }
+                    return true;
+                }
+
+                if (pe.profile_edit_text_mode) {
+                    if (e == Event::Return) {
+                        pe.commit_profile_field_edit(); post(); return true;
+                    }
+                    if (e == Event::Backspace) {
+                        if (!pe.edit_buf.empty()) pe.edit_buf.pop_back();
+                        return true;
+                    }
+                    if (e.is_character()) {
+                        if (pe.edit_buf.size() < 4096) pe.edit_buf += e.character();
+                        return true;
+                    }
+                    return true;
+                }
+
+                // Profile detail navigation mode
+                if (e == Event::ArrowUp) {
+                    pe.profile_field_up(); return true;
+                }
+                if (e == Event::ArrowDown) {
+                    pe.profile_field_down(); return true;
+                }
+                if (e == Event::Return) {
+                    pe.begin_edit_profile_field(); post(); return true;
+                }
+                return true;
+            }
+
+            // --- Credentials tab ---
+            if (sf.current_tab == SettingsForm::Tab::Credentials) {
+                if (ce.editing_key) {
+                    if (e == Event::Return) {
+                        ce.commit_key(); sf.dirty = true; post(); return true;
+                    }
+                    if (e == Event::Backspace) {
+                        if (!ce.key_edit_buf.empty()) ce.key_edit_buf.pop_back();
+                        return true;
+                    }
+                    if (e.is_character()) {
+                        ce.key_edit_buf += e.character();
+                        return true;
+                    }
+                    return true;
+                }
+                if (e == Event::ArrowUp) { ce.move_up(); return true; }
+                if (e == Event::ArrowDown) { ce.move_down(); return true; }
+                if (e == Event::Return) { ce.begin_edit_key(); post(); return true; }
+                if (e == Event::Character('d') || e == Event::Character('D')) {
+                    ce.delete_key(); sf.dirty = true; post(); return true;
+                }
+                return true;
+            }
+
             return true;  // swallow everything else while the modal is up
         }
         // While the picker overlay is up, navigate it and swallow other keys.

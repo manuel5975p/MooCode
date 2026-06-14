@@ -99,7 +99,7 @@ target_link_libraries(agent_syntax PUBLIC agent_types)
 
 # --- agent_tui: full-screen FTXUI interactive UI -----------------------------
 add_library(agent_tui STATIC agent/tui.cpp agent/tui_text.cpp agent/tui_worker.cpp
-                      agent/tui_slash.cpp)
+                      agent/tui_slash.cpp agent/settings_editor.cpp)
 target_link_libraries(agent_tui PUBLIC agent_core agent_permissions agent_diff
                       agent_tools agent_question
                       PRIVATE agent_persist agent_mentions agent_syntax agent_json
