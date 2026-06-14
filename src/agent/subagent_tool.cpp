@@ -12,7 +12,7 @@
 #include "agent/strutil.hpp"
 #include "agent/tools.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -27,26 +27,6 @@ constexpr const char* kDefaultSubagentPrompt =
     "{TOOLS}\n"
     "\n"
     "Working directory: {DIR}";
-
-// Return one "  - name: description" line per registered tool.
-std::string tool_list(const ToolRegistry& reg) {
-    std::string out;
-    for (const auto& s : reg.specs()) {
-        out += "  - " + s.name;
-        if (!s.description.empty()) out += ": " + s.description;
-        out += '\n';
-    }
-    if (!out.empty()) out.pop_back();
-    return out;
-}
-
-// Replace every occurrence of `key` in `s` with `val`.
-void substitute(std::string& s, std::string_view key, std::string_view val) {
-    for (std::size_t pos = 0; (pos = s.find(key, pos)) != std::string::npos;) {
-        s.replace(pos, key.size(), val);
-        pos += val.size();
-    }
-}
 
 // Render advertised models as "  <provider>: a, b, c" lines, one per provider.
 // Providers are alphabetical (std::map order); models keep list order; exact
@@ -85,7 +65,7 @@ Tool spawn_subagent_tool(SubagentConfig cfg) {
         "properties":{
           "prompt":{
             "type":"string",
-            "description":"The task description for the sub-agent. Be specific about what it should produce and any constraints."}},
+            "description":"Task for sub-agent. Be specific about what it should produce and any constraints."}},
         "required":["prompt"]})");
 
     // Advertise the selectable models in the `model` argument description so the
@@ -98,19 +78,18 @@ Tool spawn_subagent_tool(SubagentConfig cfg) {
             params["properties"]["model"] = {
                 {"type", "string"},
                 {"description",
-                 "Optional. Run the sub-agent on a different model instead of "
-                 "the same one this agent uses. Omit to inherit the current "
-                 "model. Available models:\n" +
+                 "Run sub-agent on a different model instead of same one this "
+                 "agent uses. Omit to inherit current model. Available "
+                 "models:\n" +
                      format_model_list(models)}};
     }
 
     ToolSpec spec{
         "spawn_subagent",
-        "Spawn a sub-agent to handle a sub-task independently. The sub-agent "
-        "sees the same file/shell/fetch/search tools as you but cannot spawn "
-        "further sub-agents. Use for complex multi-step sub-tasks that would "
-        "bloat this conversation. The sub-agent runs to completion and returns "
-        "its final answer.",
+        "Spawn sub-agent to handle a sub-task independently. Sub-agent sees "
+        "same file/shell/fetch/search tools as you but cannot spawn further "
+        "sub-agents. Use for complex multi-step sub-tasks that would bloat this "
+        "conversation. Sub-agent runs to completion, returns its final answer.",
         std::move(params)};
 
     return Tool{
@@ -264,4 +243,4 @@ Tool spawn_subagent_tool(SubagentConfig cfg) {
         }};
 }
 
-}  // namespace flagent
+}  // namespace moocode

@@ -5,7 +5,7 @@
 
 #include "agent/strutil.hpp"  // to_lower
 
-namespace flagent {
+namespace moocode {
 
 GenControlResult parse_effort(std::string_view arg) {
     GenControlResult r;
@@ -69,4 +69,4 @@ ThemeResult parse_theme(std::string_view arg) {
     return r;
 }
 
-}  // namespace flagent
+}  // namespace moocode

@@ -1,5 +1,5 @@
-#ifndef FLAGENT_PROVIDER_HPP
-#define FLAGENT_PROVIDER_HPP
+#ifndef MOOCODE_PROVIDER_HPP
+#define MOOCODE_PROVIDER_HPP
 
 // The provider seam: one abstract operation, "produce the next assistant turn".
 // Keeping this wire-format-agnostic lets OpenAI-compatible and (future)
@@ -15,7 +15,52 @@
 
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
+
+// Which backend wire format a base_url/model pair speaks.
+enum class ProviderKind { OpenAI, Anthropic, Gemini };
+
+// An explicit user choice; Auto means "decide via detect_provider_kind".
+enum class ProviderChoice { Auto, OpenAI, Anthropic, Gemini };
+
+// Human-readable label for the status bar / logs ("openai" / "anthropic").
+const char* provider_kind_name(ProviderKind k);
+
+// A named convenience bundle (wire format + endpoint + model) so a user can
+// write e.g. `--provider deepseek-flash` instead of spelling out a base URL and
+// model. Presets target each vendor's OpenAI-native endpoint (the richer,
+// standard path; the Anthropic-compatible endpoint stays reachable by passing
+// its base URL explicitly).
+struct ProviderPreset {
+    ProviderKind kind;
+    std::string base_url;
+    std::string model;
+};
+
+// Resolve a preset name (case-insensitive): "minimax", "deepseek"/"deepseek-pro",
+// "deepseek-flash", "gemini"/"google" (native), "gemini-openai" (compat shim).
+// Returns std::nullopt for non-preset values (openai/anthropic/auto and anything
+// unrecognised), so callers fall back to parse_provider_choice.
+std::optional<ProviderPreset> lookup_preset(std::string_view name);
+
+// Parse a --provider / $LLM_PROVIDER / settings value. "anthropic"/"claude" =>
+// Anthropic; "openai"/"oai"/"chat"/"gpt" => OpenAI; "gemini"/"google" => Gemini;
+// anything else (incl. "", "auto") => Auto. Case-insensitive. Total.
+ProviderChoice parse_provider_choice(std::string_view s);
+
+// Autodetect the wire format from the endpoint: a base_url whose host contains
+// "anthropic" => Anthropic; a Google "generativelanguage"/"googleapis" host =>
+// Gemini (unless the path names the "/openai" compat shim, which is OpenAI);
+// otherwise OpenAI. `model` is reserved for future heuristics and currently
+// unused so OpenAI-compatible gateways are not misclassified. Total.
+ProviderKind detect_provider_kind(std::string_view base_url,
+                                  std::string_view model);
+
+// Normalize a base URL in-place: remove a single trailing '/'. All provider
+// backends call this in set_base_url(). Lives here (not in openai_provider.hpp)
+// so the Anthropic and Gemini backends don't need to include openai_provider.hpp
+// for one trivial function.
+void normalize_base_url(std::string& base_url);
 
 // Token accounting for one turn, as reported by the server's `usage` object.
 // `present` is false when the endpoint did not report usage.
@@ -122,6 +167,28 @@ struct Provider {
     virtual ~Provider() = default;
 };
 
-}  // namespace flagent
+// --- Shared mutator implementations for providers ---------------------------
+// Each provider's set_model/set_base_url/etc. is a one-liner that mutates
+// a config field. These free functions capture the three common patterns so
+// each provider's .cpp calls them instead of copy-pasting.
 
-#endif  // FLAGENT_PROVIDER_HPP
+inline void provider_set_model(std::string& cfg_model, std::string m) {
+    cfg_model = std::move(m);
+}
+inline std::string provider_get_model(const std::string& cfg_model) {
+    return cfg_model;
+}
+inline void provider_set_base_url(std::string& cfg_base_url, std::string url) {
+    cfg_base_url = std::move(url);
+    normalize_base_url(cfg_base_url);
+}
+inline std::string provider_get_base_url(const std::string& cfg_base_url) {
+    return cfg_base_url;
+}
+inline void provider_set_api_key(std::string& cfg_key, std::string key) {
+    cfg_key = std::move(key);
+}
+
+}  // namespace moocode
+
+#endif  // MOOCODE_PROVIDER_HPP

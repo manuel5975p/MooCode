@@ -5,7 +5,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 TEST("rtk_rewrite_wraps_allowlisted") {
     CHECK_EQ(rtk_rewrite("ls").value(), std::string("rtk ls"));

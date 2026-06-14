@@ -1,15 +1,13 @@
-#ifndef FLAGENT_STREAM_DETAIL_HPP
-#define FLAGENT_STREAM_DETAIL_HPP
+#ifndef MOOCODE_STREAM_DETAIL_HPP
+#define MOOCODE_STREAM_DETAIL_HPP
 
-// Implementation detail of StreamAccumulator (stream.hpp): the <think>-tag
-// splitter. Lives in its own header so it stays out of the public streaming
-// surface while remaining unit-testable in isolation. Not part of the stable
-// API — include stream.hpp for the public types.
+// Implementation detail of StreamAccumulator: the <think>-tag splitter.
+// Included only by stream.cpp and test_stream.cpp. Not part of the public API.
 
 #include <string>
 #include <string_view>
 
-namespace flagent {
+namespace moocode {
 
 // Routes a *stream* of text into "answer" (outside <think>) and "reasoning"
 // (inside <think>) parts. A tag may be split across feed() calls; partial tag
@@ -36,6 +34,6 @@ private:
     std::string pending_;  // trailing bytes that could still grow into a tag
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_STREAM_DETAIL_HPP
+#endif  // MOOCODE_STREAM_DETAIL_HPP

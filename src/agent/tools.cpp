@@ -2,7 +2,9 @@
 
 #include <algorithm>
 
-namespace flagent {
+#include "agent/strutil.hpp"  // one_line
+
+namespace moocode {
 
 void ToolRegistry::add(Tool tool) {
     auto it = std::ranges::find_if(
@@ -34,4 +36,21 @@ std::expected<std::string, Error> ToolRegistry::invoke(
     return it->run(args);
 }
 
-}  // namespace flagent
+std::string tool_list(const ToolRegistry& reg, std::size_t desc_clip) {
+    std::string out;
+    for (const auto& s : reg.specs()) {
+        out += "  - " + s.name;
+        if (!s.description.empty()) {
+            out += ": ";
+            if (desc_clip > 0)
+                out += one_line(s.description, desc_clip);
+            else
+                out += s.description;
+        }
+        out += '\n';
+    }
+    if (!out.empty()) out.pop_back();
+    return out;
+}
+
+}  // namespace moocode

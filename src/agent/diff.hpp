@@ -1,5 +1,5 @@
-#ifndef FLAGENT_DIFF_HPP
-#define FLAGENT_DIFF_HPP
+#ifndef MOOCODE_DIFF_HPP
+#define MOOCODE_DIFF_HPP
 
 // Pure line-level diff. No I/O, no dependencies beyond the STL: split both texts
 // on '\n', run a classic LCS, and emit the full diff (every context line kept;
@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace flagent {
+namespace moocode {
 
 // One emitted diff line. `text` is the line content without its trailing newline.
 struct DiffLine {
@@ -43,6 +43,6 @@ std::vector<DiffLine> elide_context(const std::vector<DiffLine>& diff,
 // one line per entry with a trailing newline. Total (never fails).
 std::string render_ansi_diff(const std::vector<DiffLine>& lines);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_DIFF_HPP
+#endif  // MOOCODE_DIFF_HPP

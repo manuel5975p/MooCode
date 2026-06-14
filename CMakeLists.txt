@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(flagent LANGUAGES CXX)
+project(moocode LANGUAGES CXX)
 
 # --- Global conventions -----------------------------------------------------
 set(CMAKE_CXX_STANDARD 23)            # std::expected
@@ -14,23 +14,23 @@ endif()
 # A custom build type that pushes for the smallest possible binary: -Oz, NDEBUG,
 # full LTO and a stripped (-s) link. The LTO spelling differs per compiler.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  set(_FLAGENT_LTO_FLAGS "-flto -flto-partition=one")
+  set(_MOOCODE_LTO_FLAGS "-flto -flto-partition=one")
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  set(_FLAGENT_LTO_FLAGS "-flto=full")
+  set(_MOOCODE_LTO_FLAGS "-flto=full")
 else()
-  set(_FLAGENT_LTO_FLAGS "-flto")
+  set(_MOOCODE_LTO_FLAGS "-flto")
 endif()
 set(CMAKE_CXX_FLAGS_LTO_MINSIZE
-    "-Oz -DNDEBUG ${_FLAGENT_LTO_FLAGS}"
+    "-Oz -DNDEBUG ${_MOOCODE_LTO_FLAGS}"
     CACHE STRING "Flags used by the C++ compiler during LTO_MINSIZE builds." FORCE)
 set(CMAKE_C_FLAGS_LTO_MINSIZE
-    "-Oz -DNDEBUG ${_FLAGENT_LTO_FLAGS}"
+    "-Oz -DNDEBUG ${_MOOCODE_LTO_FLAGS}"
     CACHE STRING "Flags used by the C compiler during LTO_MINSIZE builds." FORCE)
 set(CMAKE_EXE_LINKER_FLAGS_LTO_MINSIZE
-    "${_FLAGENT_LTO_FLAGS} -s"
+    "${_MOOCODE_LTO_FLAGS} -s"
     CACHE STRING "Flags used by the linker during LTO_MINSIZE builds." FORCE)
 set(CMAKE_SHARED_LINKER_FLAGS_LTO_MINSIZE
-    "${_FLAGENT_LTO_FLAGS} -s"
+    "${_MOOCODE_LTO_FLAGS} -s"
     CACHE STRING "Flags used by the linker during LTO_MINSIZE shared-lib builds." FORCE)
 mark_as_advanced(
   CMAKE_CXX_FLAGS_LTO_MINSIZE
@@ -44,17 +44,17 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
 # --- Dependencies -----------------------------------------------------------
 # libcurl: by default build a feature-stripped, fully static one from source so
 # the binary carries no HTTP/3 / SSH / krb5 / brotli / … shared objects. Set
-# -DFLAGENT_BUNDLED_CURL=OFF to fall back to the system libcurl instead.
-option(FLAGENT_BUNDLED_CURL "Build a static, minimal libcurl from source" ON)
-# Treat warnings as errors for flagent's own targets. Default OFF: the toolchain
+# -DMOOCODE_BUNDLED_CURL=OFF to fall back to the system libcurl instead.
+option(MOOCODE_BUNDLED_CURL "Build a static, minimal libcurl from source" ON)
+# Treat warnings as errors for moocode's own targets. Default OFF: the toolchain
 # is unpinned, so a newer GCC/Clang warning must never brick a stock build. The
 # dev/CI preset opts in.
-option(FLAGENT_WERROR "Treat warnings as errors for flagent's own targets" OFF)
-# Sanitizers for flagent's own targets. A STRING (not a bool) so the mutually
+option(MOOCODE_WERROR "Treat warnings as errors for moocode's own targets" OFF)
+# Sanitizers for moocode's own targets. A STRING (not a bool) so the mutually
 # exclusive "address;undefined" and "thread" are both expressible. Empty (the
 # default) keeps today's behaviour.
-set(FLAGENT_SANITIZE "" CACHE STRING "Sanitizers for flagent targets: address;undefined | thread")
-if(FLAGENT_BUNDLED_CURL)
+set(MOOCODE_SANITIZE "" CACHE STRING "Sanitizers for moocode targets: address;undefined | thread")
+if(MOOCODE_BUNDLED_CURL)
   list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
   include(BundledCurl)
 else()
@@ -80,17 +80,17 @@ set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(ftxui)
 
 # Project-wide warning flags apply only to targets defined from here down, i.e.
-# flagent's own libraries — not the fetched FTXUI sources above.
+# moocode's own libraries — not the fetched FTXUI sources above.
 add_compile_options(-Wall -Wextra -Wpedantic)
-if(FLAGENT_WERROR)
+if(MOOCODE_WERROR)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
 endif()
-if(FLAGENT_SANITIZE)
-  # FLAGENT_SANITIZE is a CMake list ("address;undefined"); -fsanitize wants a
+if(MOOCODE_SANITIZE)
+  # MOOCODE_SANITIZE is a CMake list ("address;undefined"); -fsanitize wants a
   # comma-separated value, so join before handing it to the compiler/linker.
-  string(REPLACE ";" "," _FLAGENT_SANITIZE_FLAG "${FLAGENT_SANITIZE}")
-  add_compile_options(-fsanitize=${_FLAGENT_SANITIZE_FLAG} -fno-omit-frame-pointer -g)
-  add_link_options(-fsanitize=${_FLAGENT_SANITIZE_FLAG})
+  string(REPLACE ";" "," _MOOCODE_SANITIZE_FLAG "${MOOCODE_SANITIZE}")
+  add_compile_options(-fsanitize=${_MOOCODE_SANITIZE_FLAG} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${_MOOCODE_SANITIZE_FLAG})
 endif()
 
 # --- Libraries & executable -------------------------------------------------
@@ -98,7 +98,7 @@ add_subdirectory(src)
 
 # agent_http links the imported CURL::libcurl (an archive produced by the
 # bundled ExternalProject); make it wait for that build to finish.
-if(FLAGENT_BUNDLED_CURL)
+if(MOOCODE_BUNDLED_CURL)
   add_dependencies(agent_http ${BUNDLED_CURL_TARGET})
 endif()
 

@@ -8,9 +8,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include "agent/json_util.hpp"
 #include "agent/proc.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -29,13 +30,6 @@ std::vector<std::string> git_argv(const GitConfig& cfg,
     argv.push_back("git");
     argv.insert(argv.end(), sub.begin(), sub.end());
     return argv;
-}
-
-// Optional string arg: present and a JSON string => its value; absent => none.
-std::optional<std::string> opt_string(const nlohmann::json& j, const char* key) {
-    auto it = j.find(key);
-    if (it == j.end() || !it->is_string()) return std::nullopt;
-    return it->get<std::string>();
 }
 
 // Optional bool arg: true only when present and a JSON true.
@@ -72,7 +66,7 @@ std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run) {
 
     tools.push_back(Tool{
         ToolSpec{"git_status",
-                 "Show the working-tree status of the project repository. Read-only.",
+                 "Show repo working-tree status. Read-only.",
                  empty_params()},
         [ctx](const nlohmann::json&) -> std::expected<std::string, Error> {
             return ctx->run(git_argv(ctx->cfg, {"status"}), ctx->cfg.root);
@@ -80,21 +74,21 @@ std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run) {
 
     tools.push_back(Tool{
         ToolSpec{"git_diff",
-                 "Show changes in the working tree, or staged changes with `staged`, "
+                 "Show working-tree changes, or staged with `staged`, "
                  "optionally limited to `path`. Read-only.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
                       {{"staged",
                         {{"type", "boolean"},
-                         {"description", "show staged (index) changes instead"}}},
+                         {"description", "show staged (index) changes"}}},
                        {"path",
                         {{"type", "string"},
-                         {"description", "limit the diff to this path"}}}}}}},
+                         {"description", "limit diff to this path"}}}}}}},
         [ctx](const nlohmann::json& args) -> std::expected<std::string, Error> {
             std::vector<std::string> sub{"diff"};
             if (opt_bool(args, "staged")) sub.push_back("--staged");
-            if (auto path = opt_string(args, "path"); path && !path->empty()) {
+            if (auto path = ::moocode::json::get_string_opt(args, "path").value_or(std::nullopt); path && !path->empty()) {
                 sub.push_back("--");
                 sub.push_back(*path);
             }
@@ -103,21 +97,21 @@ std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run) {
 
     tools.push_back(Tool{
         ToolSpec{"git_log",
-                 "Show the most recent commits (default 20), optionally limited to "
+                 "Show recent commits (default 20), optionally limited to "
                  "`path`. Read-only.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
                       {{"count",
                         {{"type", "integer"},
-                         {"description", "number of commits to show (default 20)"}}},
+                         {"description", "commits to show (default 20)"}}},
                        {"path",
                         {{"type", "string"},
-                         {"description", "limit the log to this path"}}}}}}},
+                         {"description", "limit log to this path"}}}}}}},
         [ctx](const nlohmann::json& args) -> std::expected<std::string, Error> {
             const int count = opt_count(args, "count", 20);
             std::vector<std::string> sub{"log", "-n", std::to_string(count)};
-            if (auto path = opt_string(args, "path"); path && !path->empty()) {
+            if (auto path = ::moocode::json::get_string_opt(args, "path").value_or(std::nullopt); path && !path->empty()) {
                 sub.push_back("--");
                 sub.push_back(*path);
             }
@@ -126,17 +120,16 @@ std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run) {
 
     tools.push_back(Tool{
         ToolSpec{"git_show",
-                 "Show a commit (or other revision) in full, including its diff. "
-                 "Read-only.",
+                 "Show commit (or revision) in full with its diff. Read-only.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
                       {{"rev",
                         {{"type", "string"},
-                         {"description", "revision to show (e.g. HEAD, a sha, a tag)"}}}}},
+                         {"description", "revision to show (e.g. HEAD, sha, tag)"}}}}},
                      {"required", nlohmann::json::array({"rev"})}}},
         [ctx](const nlohmann::json& args) -> std::expected<std::string, Error> {
-            auto rev = opt_string(args, "rev");
+            auto rev = ::moocode::json::get_string_opt(args, "rev").value_or(std::nullopt);
             if (!rev || rev->empty())
                 return std::unexpected(Error{.msg = "git_show: 'rev' is required", .code = 0});
             return ctx->run(git_argv(ctx->cfg, {"show", *rev}), ctx->cfg.root);
@@ -144,7 +137,7 @@ std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run) {
 
     tools.push_back(Tool{
         ToolSpec{"git_branch",
-                 "List the branches of the project repository. Read-only.",
+                 "List repo branches. Read-only.",
                  empty_params()},
         [ctx](const nlohmann::json&) -> std::expected<std::string, Error> {
             return ctx->run(git_argv(ctx->cfg, {"branch"}), ctx->cfg.root);
@@ -153,4 +146,4 @@ std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run) {
     return tools;
 }
 
-}  // namespace flagent
+}  // namespace moocode

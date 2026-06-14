@@ -3,7 +3,7 @@
 #include <array>
 #include <string>
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -58,4 +58,4 @@ std::optional<std::string> rtk_rewrite(std::string_view cmd) {
     return std::nullopt;
 }
 
-}  // namespace flagent
+}  // namespace moocode

@@ -1,6 +1,6 @@
 # CMake build system
 
-`flagent` is a C++23 project (see top-level `CMakeLists.txt`) with one
+`moocode` is a C++23 project (see top-level `CMakeLists.txt`) with one
 `ExternalProject`-based dependency graph and one `FetchContent`-based
 dependency. The top-level file is intentionally short; the heavy lifting
 lives in `cmake/BundledCurl.cmake`.
@@ -18,15 +18,15 @@ lives in `cmake/BundledCurl.cmake`.
 
 | Dependency     | Source                                            | Knobs                                                                              |
 |----------------|---------------------------------------------------|------------------------------------------------------------------------------------|
-| libcurl        | `BundledCurl.cmake` (default) or system `find_package(CURL REQUIRED)` | `-DFLAGENT_BUNDLED_CURL=OFF` falls back to distro libcurl.                |
+| libcurl        | `BundledCurl.cmake` (default) or system `find_package(CURL REQUIRED)` | `-DMOOCODE_BUNDLED_CURL=OFF` falls back to distro libcurl.                |
 | nlohmann_json  | system, `find_package`                            | required                                                                           |
 | FTXUI v6.1.9   | `FetchContent` from pinned tarball, SHA256-pinned | examples/docs/tests/install all forced OFF; see "FTXUI warnings" below.            |
 
 The libcurl option is the only user-facing build toggle:
-- `FLAGENT_BUNDLED_CURL=ON` (default): include `cmake/BundledCurl.cmake`,
+- `MOOCODE_BUNDLED_CURL=ON` (default): include `cmake/BundledCurl.cmake`,
   which builds a feature-stripped, fully static libcurl from source and
   exposes it as the imported target `CURL::libcurl`.
-- `FLAGENT_BUNDLED_CURL=OFF`: `find_package(CURL REQUIRED)` is used
+- `MOOCODE_BUNDLED_CURL=OFF`: `find_package(CURL REQUIRED)` is used
   instead; the system target (e.g. `CURL::libcurl` from a distro
   `CURLConfig.cmake`) is linked in `src/CMakeLists.txt`.
 
@@ -43,7 +43,7 @@ The libcurl option is the only user-facing build toggle:
 ### Warnings
 - `add_compile_options(-Wall -Wextra -Wpedantic)` is placed **after**
   `FetchContent_MakeAvailable(ftxui)`. Per the comment, this scopes the
-  flags to flagent's own targets only — FTXUI's own sources are built
+  flags to moocode's own targets only — FTXUI's own sources are built
   with their upstream flags and are not expected to be flag-clean
   against `-Wpedantic`.
 - The top-level file does **not** set `-Werror`; any target that wants
@@ -54,7 +54,7 @@ The libcurl option is the only user-facing build toggle:
 ## `cmake/BundledCurl.cmake`
 
 ### Why it exists
-`flagent` only does HTTPS GET/POST with custom headers, a write callback,
+`moocode` only does HTTPS GET/POST with custom headers, a write callback,
 a timeout, and gzip/deflate decompression (`src/agent/http.cpp`). A
 distro `libcurl.so` drags in ~20 shared objects for protocols and
 features the agent never uses: HTTP/3, QUIC, SSH, IMAP/SMTP/POP3/RTSP,
@@ -192,7 +192,7 @@ Notes:
 target itself. The root `CMakeLists.txt` is responsible:
 
 ```cmake
-if(FLAGENT_BUNDLED_CURL)
+if(MOOCODE_BUNDLED_CURL)
   add_dependencies(agent_http ${BUNDLED_CURL_TARGET})
 endif()
 ```

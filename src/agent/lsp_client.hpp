@@ -1,5 +1,5 @@
-#ifndef FLAGENT_LSP_CLIENT_HPP
-#define FLAGENT_LSP_CLIENT_HPP
+#ifndef MOOCODE_LSP_CLIENT_HPP
+#define MOOCODE_LSP_CLIENT_HPP
 
 // A minimal, server-agnostic LSP JSON-RPC client over stdio, plus a ClangdSession
 // that owns a long-lived `clangd` subprocess and the LSP lifecycle. The agent
@@ -28,7 +28,7 @@
 
 #include "agent/types.hpp"  // Error
 
-namespace flagent::lsp {
+namespace moocode::lsp {
 
 // How the LSP `character` field counts: bytes (utf-8) or UTF-16 code units. The
 // concrete value is negotiated with the server during `initialize`.
@@ -156,6 +156,6 @@ private:
     const std::atomic<bool>* cancel_ = nullptr;
 };
 
-}  // namespace flagent::lsp
+}  // namespace moocode::lsp
 
-#endif  // FLAGENT_LSP_CLIENT_HPP
+#endif  // MOOCODE_LSP_CLIENT_HPP

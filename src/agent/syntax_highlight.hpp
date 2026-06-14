@@ -1,5 +1,5 @@
-#ifndef FLAGENT_AGENT_SYNTAX_HIGHLIGHT_HPP
-#define FLAGENT_AGENT_SYNTAX_HIGHLIGHT_HPP
+#ifndef MOOCODE_AGENT_SYNTAX_HIGHLIGHT_HPP
+#define MOOCODE_AGENT_SYNTAX_HIGHLIGHT_HPP
 
 // Pure, terminal-agnostic syntax highlighter for fenced code blocks. Produces
 // per-line token spans so a UI layer can map categories to colours; it knows
@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-namespace flagent {
+namespace moocode {
 
 // Languages we currently colourise. None means "leave as plain text".
 enum class Language : std::uint8_t { None, Bash, Python, Cpp };
@@ -46,6 +46,6 @@ Language language_from_tag(std::string_view tag);
 std::vector<std::vector<HlSpan>> highlight_block(std::string_view code,
                                                  Language lang);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_AGENT_SYNTAX_HIGHLIGHT_HPP
+#endif  // MOOCODE_AGENT_SYNTAX_HIGHLIGHT_HPP

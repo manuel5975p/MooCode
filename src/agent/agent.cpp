@@ -1,5 +1,6 @@
 #include "agent/agent.hpp"
 
+#include <climits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -7,7 +8,7 @@
 #include "agent/json_util.hpp"
 #include "agent/strutil.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -313,16 +314,19 @@ std::expected<Conversation, Error> Agent::compact(
     return next;
 }
 
-int Agent::estimated_tokens(const Conversation& conv) {
-    int chars = 0;
+int estimated_tokens(const Conversation& conv) {
+    std::size_t chars = 0;
     for (const auto& m : conv) {
-        chars += static_cast<int>(m.content().size());
+        chars += m.content().size();
         if (m.role() == Role::Assistant)
-            for (const auto& tc : m.tool_calls()) {
-                chars += static_cast<int>(tc.name.size() + tc.arguments_json.size());
-            }
+            for (const auto& tc : m.tool_calls())
+                chars += tc.name.size() + tc.arguments_json.size();
     }
-    return std::max(1, chars / 4);
+    // Saturate at INT_MAX to avoid UB in the /4 division on overflow
+    // (conversations this large can't fit any real context window anyway).
+    if (chars > static_cast<std::size_t>(INT_MAX))
+        chars = static_cast<std::size_t>(INT_MAX);
+    return std::max(1, static_cast<int>(chars / 4));
 }
 
-}  // namespace flagent
+}  // namespace moocode

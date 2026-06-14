@@ -8,7 +8,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 using nlohmann::json;
 
 namespace {

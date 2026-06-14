@@ -5,7 +5,7 @@
 #include "temp_dir.hpp"
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 ToolOptions opts_for(const test::TempDir& d) {

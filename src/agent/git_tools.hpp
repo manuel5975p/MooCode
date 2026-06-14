@@ -1,5 +1,5 @@
-#ifndef FLAGENT_GIT_TOOLS_HPP
-#define FLAGENT_GIT_TOOLS_HPP
+#ifndef MOOCODE_GIT_TOOLS_HPP
+#define MOOCODE_GIT_TOOLS_HPP
 
 // Read-only local-git inspection tools confined to a project root: git_status,
 // git_diff, git_log, git_show, git_branch. Output goes through `rtk git ...`
@@ -16,7 +16,7 @@
 #include "agent/tools.hpp"
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 struct GitConfig {
     std::filesystem::path root = ".";  // cwd for every git invocation
@@ -33,6 +33,6 @@ using GitRunFn = std::function<std::expected<std::string, Error>(
 // git_branch). `run` empty => real run_process transport. post: 5 tools.
 std::vector<Tool> git_tools(GitConfig cfg, GitRunFn run = {});
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_GIT_TOOLS_HPP
+#endif  // MOOCODE_GIT_TOOLS_HPP

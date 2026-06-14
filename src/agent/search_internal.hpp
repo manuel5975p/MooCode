@@ -1,5 +1,5 @@
-#ifndef FLAGENT_SEARCH_INTERNAL_HPP
-#define FLAGENT_SEARCH_INTERNAL_HPP
+#ifndef MOOCODE_SEARCH_INTERNAL_HPP
+#define MOOCODE_SEARCH_INTERNAL_HPP
 
 // Internals of the web-search backends (search.cpp): result type, the
 // SearchBackend interface and its concrete SearXNG/Tavily/DuckDuckGo
@@ -18,7 +18,7 @@
 
 #include "agent/types.hpp"  // Error
 
-namespace flagent {
+namespace moocode {
 
 // One search hit, normalized across backends.
 struct SearchResult {
@@ -163,6 +163,6 @@ struct Router {
     search(std::string_view query) const;
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_SEARCH_INTERNAL_HPP
+#endif  // MOOCODE_SEARCH_INTERNAL_HPP

@@ -2,7 +2,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 TEST("parse: valid object round-trips") {
     auto v = json::parse(R"({"a":1,"b":"x"})");
@@ -51,10 +51,10 @@ TEST("dump then parse is identity for typical values") {
 }
 
 TEST("get_string: present field") {
-    auto j = json::parse(R"({"name":"flagent"})").value();
+    auto j = json::parse(R"({"name":"moocode"})").value();
     auto s = json::get_string(j, "name");
     CHECK(s.has_value());
-    if (s) CHECK_EQ(*s, std::string("flagent"));
+    if (s) CHECK_EQ(*s, std::string("moocode"));
 }
 
 TEST("get_string: missing field returns Error naming the key") {

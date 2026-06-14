@@ -1,5 +1,5 @@
-#ifndef FLAGENT_LSP_DETAIL_HPP
-#define FLAGENT_LSP_DETAIL_HPP
+#ifndef MOOCODE_LSP_DETAIL_HPP
+#define MOOCODE_LSP_DETAIL_HPP
 
 // Wire-framing internals of the LSP client (lsp_client.cpp): the
 // "Content-Length: N\r\n\r\n<body>" frame parser/serializer. Kept out of the
@@ -16,7 +16,7 @@
 
 #include "agent/types.hpp"  // Error
 
-namespace flagent::lsp {
+namespace moocode::lsp {
 
 // One framed LSP message peeled off the front of a buffer.
 struct Framed {
@@ -32,6 +32,6 @@ std::expected<std::optional<Framed>, Error> try_parse_frame(std::string_view buf
 // Serialize `msg` into a Content-Length framed wire message.
 std::string frame(const nlohmann::json& msg);
 
-}  // namespace flagent::lsp
+}  // namespace moocode::lsp
 
-#endif  // FLAGENT_LSP_DETAIL_HPP
+#endif  // MOOCODE_LSP_DETAIL_HPP

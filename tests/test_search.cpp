@@ -6,7 +6,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 
@@ -32,7 +32,7 @@ struct FakeBackend : SearchBackend {
 std::filesystem::path tmp_quota() {
     static int n = 0;
     auto p = std::filesystem::temp_directory_path() /
-             ("flagent_quota_test_" + std::to_string(++n) + ".json");
+             ("moocode_quota_test_" + std::to_string(++n) + ".json");
     std::filesystem::remove(p);
     return p;
 }

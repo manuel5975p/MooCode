@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+
+#include "agent/gitea_internal.hpp"
+#include "agent/http_detail.hpp"
 #include <cstdint>
 #include <cstring>
 #include <format>
@@ -15,7 +18,7 @@
 #include "agent/json_util.hpp"
 #include "agent/strutil.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -58,10 +61,6 @@ std::string login_of(const njson& j, const char* key) {
     }
     return {};
 }
-
-// Encode one URL path segment (everything but unreserved bytes).
-std::string enc(std::string_view segment) { return http::url_encode(segment); }
-
 // Encode a repo-relative file path, keeping '/' separators.
 std::string enc_path(std::string_view path) {
     std::string out;
@@ -71,7 +70,7 @@ std::string enc_path(std::string_view path) {
         const auto seg = path.substr(start, slash == std::string_view::npos
                                                 ? std::string_view::npos
                                                 : slash - start);
-        out += enc(seg);
+        out += http::url_encode(seg);
         if (slash == std::string_view::npos) break;
         out += '/';
         start = slash + 1;
@@ -80,7 +79,7 @@ std::string enc_path(std::string_view path) {
 }
 
 std::string repo_path(std::string_view owner, std::string_view repo) {
-    return "/repos/" + enc(owner) + "/" + enc(repo);
+    return "/repos/" + http::url_encode(owner) + "/" + http::url_encode(repo);
 }
 
 // Strip one layer of matching single or double quotes.
@@ -584,14 +583,6 @@ std::expected<nlohmann::json, Error> GiteaClient::get_paged(
 
 namespace {
 
-// Optional string arg: absent/null -> def; wrong type -> Error.
-std::expected<std::string, Error> opt_string(const nlohmann::json& args,
-                                             const char* key, std::string def) {
-    auto v = json::get_string_opt(args, key);
-    if (!v) return std::unexpected(v.error());
-    return v->value_or(std::move(def));
-}
-
 // Optional integer arg clamped to [lo, hi]; absent/null -> def.
 std::expected<int, Error> opt_int(const nlohmann::json& args, const char* key,
                                   int def, int lo, int hi) {
@@ -627,18 +618,17 @@ nlohmann::json bool_prop(const char* desc) {
     return {{"type", "boolean"}, {"description", desc}};
 }
 
-nlohmann::json owner_prop() { return string_prop("repository owner (user or org)"); }
-nlohmann::json repo_prop() { return string_prop("repository name"); }
+nlohmann::json owner_prop() { return string_prop("repo owner (user or org)"); }
+nlohmann::json repo_prop() { return string_prop("repo name"); }
 
 nlohmann::json url_prop() {
-    return string_prop("Gitea instance base URL; defaults to the configured "
-                       "instance ($FLAGENT_GITEA_URL)");
+    return string_prop("Gitea instance base URL; defaults to configured "
+                       "instance ($MOOCODE_GITEA_URL)");
 }
 
 nlohmann::json pattern_prop() {
-    return string_prop("JavaScript-style (ECMAScript) regex matched "
-                       "case-insensitively against owner/name, e.g. "
-                       "\"^infra/\" or \"agent\"");
+    return string_prop("ECMAScript regex, case-insensitive, matched on "
+                       "owner/name, e.g. \"^infra/\" or \"agent\"");
 }
 
 // How many repos a client-side filter may pull from the search endpoint.
@@ -653,7 +643,7 @@ struct GiteaCtx {
     HttpGetFn get;
 
     std::expected<GiteaClient, Error> client_for(const nlohmann::json& args) const {
-        auto url = opt_string(args, "url", "");
+        auto url = ::moocode::json::get_string_or_default(args, "url", "");
         if (!url) return std::unexpected(url.error());
         GiteaConfig c = cfg;
         if (!url->empty()) {
@@ -670,7 +660,7 @@ struct GiteaCtx {
         if (c.base_url.empty())
             return std::unexpected(Error{
                 .msg = "no Gitea instance configured: pass `url` or set "
-                       "FLAGENT_GITEA_URL",
+                       "MOOCODE_GITEA_URL",
                 .code = 0});
         return GiteaClient(std::move(c), get);
     }
@@ -694,10 +684,9 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_repos",
-                 "List or search repositories on the Gitea instance. With `owner`, "
-                 "lists that user's/org's repos; otherwise searches all visible "
-                 "repos (optionally filtered by `query`). `pattern` additionally "
-                 "filters by regex on owner/name.",
+                 "List or search repos on the Gitea instance. With `owner`, "
+                 "lists that user's/org's repos; else searches all visible repos "
+                 "(filter with `query`). `pattern` filters by regex on owner/name.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -705,15 +694,15 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                        {"query", string_prop("keyword filter for repo search")},
                        {"pattern", pattern_prop()},
                        {"owner", string_prop("list repos of this user or org only")},
-                       {"limit", int_prop("max repositories to return (default 30)")}}}}},
+                       {"limit", int_prop("max repos to return (default 30)")}}}}},
         [ctx](const nlohmann::json& args) -> std::expected<std::string, Error> {
             auto client = ctx->client_for(args);
             if (!client) return std::unexpected(client.error());
-            auto query = opt_string(args, "query", "");
+            auto query = ::moocode::json::get_string_or_default(args, "query", "");
             if (!query) return std::unexpected(query.error());
-            auto pattern = opt_string(args, "pattern", "");
+            auto pattern = ::moocode::json::get_string_or_default(args, "pattern", "");
             if (!pattern) return std::unexpected(pattern.error());
-            auto owner = opt_string(args, "owner", "");
+            auto owner = ::moocode::json::get_string_or_default(args, "owner", "");
             if (!owner) return std::unexpected(owner.error());
             auto limit = opt_int(args, "limit", 30, 1, 200);
             if (!limit) return std::unexpected(limit.error());
@@ -725,7 +714,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                     ? client->get_paged("/repos/search",
                                         query->empty() ? "" : "q=" + http::url_encode(*query),
                                         scan, "data")
-                    : client->get_paged("/users/" + enc(*owner) + "/repos", "", scan);
+                    : client->get_paged("/users/" + http::url_encode(*owner) + "/repos", "", scan);
             if (!repos) return std::unexpected(repos.error());
             if (!pattern->empty()) {
                 auto matched = regex_filter(*repos, "full_name", *pattern);
@@ -739,8 +728,8 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_repo",
-                 "Inspect one Gitea repository: metadata (default branch, "
-                 "visibility, counters, clone URL) plus its branch list.",
+                 "Inspect one Gitea repo: metadata (default branch, visibility, "
+                 "counters, clone URL) plus branch list.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -763,7 +752,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_prs",
-                 "List pull requests of a Gitea repository, newest first.",
+                 "List pull requests of a Gitea repo, newest first.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -778,7 +767,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
             if (!client) return std::unexpected(client.error());
             auto or_ = owner_repo(args);
             if (!or_) return std::unexpected(or_.error());
-            auto state = opt_string(args, "state", "open");
+            auto state = ::moocode::json::get_string_or_default(args, "state", "open");
             if (!state) return std::unexpected(state.error());
             if (*state != "open" && *state != "closed" && *state != "all")
                 return std::unexpected(Error{
@@ -795,7 +784,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
     tools.push_back(Tool{
         ToolSpec{"gitea_pr",
                  "Inspect one pull request: metadata, description, changed files "
-                 "with add/delete counts, and discussion comments.",
+                 "with add/delete counts, and comments.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -825,8 +814,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_pr_diff",
-                 "Fetch the raw unified diff of a pull request (truncated when "
-                 "large).",
+                 "Fetch raw unified diff of a pull request (truncated when large).",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -835,7 +823,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                        {"repo", repo_prop()},
                        {"number", int_prop("pull request number")},
                        {"max_bytes",
-                        int_prop("optional cap on returned diff bytes")}}},
+                        int_prop("cap on returned diff bytes")}}},
                      {"required", nlohmann::json::array({"owner", "repo", "number"})}}},
         [ctx, max_bytes](const nlohmann::json& args)
             -> std::expected<std::string, Error> {
@@ -855,8 +843,8 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_commits",
-                 "List commits of a Gitea repository, newest first. Optionally "
-                 "start from a branch/tag/sha or filter by file path.",
+                 "List commits of a Gitea repo, newest first. Can start from a "
+                 "branch/tag/sha or filter by file path.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -873,9 +861,9 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
             if (!client) return std::unexpected(client.error());
             auto or_ = owner_repo(args);
             if (!or_) return std::unexpected(or_.error());
-            auto ref = opt_string(args, "ref", "");
+            auto ref = ::moocode::json::get_string_or_default(args, "ref", "");
             if (!ref) return std::unexpected(ref.error());
-            auto path = opt_string(args, "path", "");
+            auto path = ::moocode::json::get_string_or_default(args, "path", "");
             if (!path) return std::unexpected(path.error());
             auto limit = opt_int(args, "limit", 30, 1, 200);
             if (!limit) return std::unexpected(limit.error());
@@ -891,7 +879,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
     tools.push_back(Tool{
         ToolSpec{"gitea_commit",
                  "Inspect one commit: author, message, per-file stats, and "
-                 "optionally its raw diff.",
+                 "its raw diff when asked.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -899,9 +887,9 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                        {"owner", owner_prop()},
                        {"repo", repo_prop()},
                        {"sha", string_prop("commit sha (or branch/tag name)")},
-                       {"diff", bool_prop("also include the raw unified diff")},
+                       {"diff", bool_prop("also include raw unified diff")},
                        {"max_bytes",
-                        int_prop("optional cap on returned diff bytes")}}},
+                        int_prop("cap on returned diff bytes")}}},
                      {"required", nlohmann::json::array({"owner", "repo", "sha"})}}},
         [ctx, max_bytes](const nlohmann::json& args)
             -> std::expected<std::string, Error> {
@@ -912,7 +900,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
             auto sha = json::get_string(args, "sha");
             if (!sha) return std::unexpected(sha.error());
             const std::string base = repo_path(or_->owner, or_->repo);
-            auto commit = client->get_json(base + "/git/commits/" + enc(*sha) +
+            auto commit = client->get_json(base + "/git/commits/" + http::url_encode(*sha) +
                                            "?stat=true");
             if (!commit) return std::unexpected(commit.error());
             std::string out = format_commit(*commit);
@@ -920,7 +908,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
             if (it != args.end() && it->is_boolean() && it->get<bool>()) {
                 auto cap = body_cap(args, max_bytes);
                 if (!cap) return std::unexpected(cap.error());
-                auto diff = client->get_text(base + "/git/commits/" + enc(*sha) + ".diff");
+                auto diff = client->get_text(base + "/git/commits/" + http::url_encode(*sha) + ".diff");
                 if (!diff) return std::unexpected(diff.error());
                 out += "\ndiff:\n" + truncate(std::move(*diff), *cap, default_trunc_marker);
             }
@@ -929,9 +917,9 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_file",
-                 "Read a file or list a directory of a Gitea repository at an "
-                 "optional ref. Directories return their entries; files return "
-                 "raw content (truncated when large).",
+                 "Read a file or list a directory of a Gitea repo at a ref. "
+                 "Directories return entries; files return raw content "
+                 "(truncated when large).",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -940,11 +928,11 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                        {"repo", repo_prop()},
                        {"path",
                         string_prop("repo-relative file or directory path "
-                                    "(default: repository root)")},
+                                    "(default: repo root)")},
                        {"ref", string_prop("branch, tag, or commit sha "
                                            "(default: default branch)")},
                        {"max_bytes",
-                        int_prop("optional cap on returned file bytes")}}},
+                        int_prop("cap on returned file bytes")}}},
                      {"required", nlohmann::json::array({"owner", "repo"})}}},
         [ctx, max_bytes](const nlohmann::json& args)
             -> std::expected<std::string, Error> {
@@ -952,9 +940,9 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
             if (!client) return std::unexpected(client.error());
             auto or_ = owner_repo(args);
             if (!or_) return std::unexpected(or_.error());
-            auto path = opt_string(args, "path", "");
+            auto path = ::moocode::json::get_string_or_default(args, "path", "");
             if (!path) return std::unexpected(path.error());
-            auto ref = opt_string(args, "ref", "");
+            auto ref = ::moocode::json::get_string_or_default(args, "ref", "");
             if (!ref) return std::unexpected(ref.error());
             const std::string base = repo_path(or_->owner, or_->repo);
             const std::string ref_q =
@@ -978,11 +966,11 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
 
     tools.push_back(Tool{
         ToolSpec{"gitea_recent_commits",
-                 "List commits made within a recent timeframe across all visible "
-                 "repositories, grouped per repo, newest first. `pattern` limits "
-                 "which repos are scanned, `branch_pattern` which branches "
-                 "(default: all); commits on several branches are reported once. "
-                 "Repos with no commits in the window are omitted.",
+                 "List commits within a recent timeframe across all visible repos, "
+                 "grouped per repo, newest first. `pattern` limits which repos are "
+                 "scanned, `branch_pattern` which branches (default: all); commits "
+                 "on several branches reported once. Repos with no commits in the "
+                 "window are dropped.",
                  nlohmann::json{
                      {"type", "object"},
                      {"properties",
@@ -993,14 +981,13 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                                     "e.g. \"36h\" or \"7d\"")},
                        {"pattern", pattern_prop()},
                        {"branch_pattern",
-                        string_prop("JavaScript-style (ECMAScript) regex matched "
-                                    "case-insensitively against branch names, "
-                                    "e.g. \"^(main|release-)\"; default: all "
-                                    "branches")},
+                        string_prop("ECMAScript regex, case-insensitive, matched on "
+                                    "branch names, e.g. \"^(main|release-)\"; "
+                                    "default: all branches")},
                        {"max_repos",
-                        int_prop("max repositories to report (default 20)")},
+                        int_prop("max repos to report (default 20)")},
                        {"limit",
-                        int_prop("max commits per repository (default 20)")}}},
+                        int_prop("max commits per repo (default 20)")}}},
                      {"required", nlohmann::json::array({"timeframe"})}}},
         [ctx](const nlohmann::json& args) -> std::expected<std::string, Error> {
             auto client = ctx->client_for(args);
@@ -1009,9 +996,9 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
             if (!timeframe) return std::unexpected(timeframe.error());
             auto span = parse_timeframe(*timeframe);
             if (!span) return std::unexpected(span.error());
-            auto pattern = opt_string(args, "pattern", "");
+            auto pattern = ::moocode::json::get_string_or_default(args, "pattern", "");
             if (!pattern) return std::unexpected(pattern.error());
-            auto branch_pat = opt_string(args, "branch_pattern", "");
+            auto branch_pat = ::moocode::json::get_string_or_default(args, "branch_pattern", "");
             if (!branch_pat) return std::unexpected(branch_pat.error());
             // Validate the branch regex up front; per-repo filtering below
             // skips repos on error and would otherwise mask a bad pattern.
@@ -1073,7 +1060,7 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
                     const std::string name = json::get_string_or(b, "name");
                     if (name.empty()) continue;
                     auto commits = client->get_paged(
-                        base + "/commits", since_q + "&sha=" + enc(name), *limit);
+                        base + "/commits", since_q + "&sha=" + http::url_encode(name), *limit);
                     if (!commits) continue;
                     // `since` needs a recent Gitea; filter client-side regardless.
                     bool contributed = false;
@@ -1111,4 +1098,4 @@ std::vector<Tool> gitea_tools(GiteaConfig cfg, HttpGetFn get) {
     return tools;
 }
 
-}  // namespace flagent
+}  // namespace moocode

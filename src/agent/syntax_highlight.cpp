@@ -3,7 +3,7 @@
 #include <cctype>
 #include <unordered_set>
 
-namespace flagent {
+namespace moocode {
 namespace {
 
 // Lower-case a single byte without locale/sign surprises.
@@ -347,4 +347,4 @@ std::vector<std::vector<HlSpan>> highlight_block(std::string_view code,
     return std::move(em.lines);
 }
 
-}  // namespace flagent
+}  // namespace moocode

@@ -1,7 +1,7 @@
-#ifndef FLAGENT_PERSIST_HPP
-#define FLAGENT_PERSIST_HPP
+#ifndef MOOCODE_PERSIST_HPP
+#define MOOCODE_PERSIST_HPP
 
-// On-disk state under ~/.flagent (settings, the tool allowlist, and saved
+// On-disk state under ~/.moo (settings, the tool allowlist, and saved
 // conversations), all stored as TOML. This header is deliberately toml-free —
 // toml.hpp (489 KB) is confined to persist.cpp, the single TU that includes it,
 // mirroring how FTXUI is confined to tui.cpp. Everything here degrades to a
@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <expected>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -18,11 +19,11 @@
 
 #include "agent/types.hpp"  // Conversation, Error
 
-namespace flagent {
+namespace moocode {
 
-// Resolved ~/.flagent directory: $FLAGENT_HOME if set, else $HOME/.flagent, else
+// Resolved ~/.moo directory: $MOOCODE_HOME if set, else $HOME/.moo, else
 // "" (no home => persistence disabled). Does not create anything.
-std::string flagent_home();
+std::string moocode_home();
 
 // A named connection profile from settings.toml [profiles.<name>]. The api_key
 // is NOT stored here; it is resolved separately from credentials.toml so secrets
@@ -126,6 +127,12 @@ std::expected<std::pair<Conversation, ConvMeta>, Error> load_conversation_with_m
 std::vector<ConvSummary> list_conversations(const std::string& dir,
                                             const std::string& cwd);
 
-}  // namespace flagent
+// Check TOML syntax without throwing. Returns std::nullopt when `text` is
+// valid TOML; otherwise returns the parser's error description. Wraps
+// toml::parse() inside persist.cpp (the only TU with toml.hpp) so other TUs
+// can validate settings.toml without including the 489 KB toml.hpp header.
+std::optional<std::string> toml_check_syntax(std::string_view text);
 
-#endif  // FLAGENT_PERSIST_HPP
+}  // namespace moocode
+
+#endif  // MOOCODE_PERSIST_HPP

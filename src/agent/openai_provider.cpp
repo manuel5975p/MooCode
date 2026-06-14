@@ -4,10 +4,11 @@
 
 #include "agent/http.hpp"
 #include "agent/json_util.hpp"
+#include "agent/provider_factory.hpp"  // ProviderConnection (for OpenAiConfig ctor)
 #include "agent/stream.hpp"
 #include "agent/strutil.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -150,6 +151,10 @@ std::expected<Turn, Error> parse_chat_response(const nlohmann::json& body) {
     return turn;
 }
 
+OpenAiConfig::OpenAiConfig(const ProviderConnection& c)
+    : base_url(c.base_url), api_key(c.api_key), model(c.model),
+      max_tokens(c.max_tokens) {}
+
 OpenAiProvider::OpenAiProvider(OpenAiConfig cfg) : cfg_(std::move(cfg)) {}
 
 void OpenAiProvider::set_params(const GenerationParams& p) {
@@ -168,18 +173,15 @@ GenerationParams OpenAiProvider::params() const {
     return p;
 }
 
-void OpenAiProvider::set_model(std::string m) { cfg_.model = std::move(m); }
+void OpenAiProvider::set_model(std::string m) { provider_set_model(cfg_.model, std::move(m)); }
 
-std::string OpenAiProvider::model() const { return cfg_.model; }
+std::string OpenAiProvider::model() const { return provider_get_model(cfg_.model); }
 
-void OpenAiProvider::set_base_url(std::string url) {
-    cfg_.base_url = std::move(url);
-    normalize_base_url(cfg_.base_url);
-}
+void OpenAiProvider::set_base_url(std::string url) { provider_set_base_url(cfg_.base_url, std::move(url)); }
 
-std::string OpenAiProvider::base_url() const { return cfg_.base_url; }
+std::string OpenAiProvider::base_url() const { return provider_get_base_url(cfg_.base_url); }
 
-void OpenAiProvider::set_api_key(std::string key) { cfg_.api_key = std::move(key); }
+void OpenAiProvider::set_api_key(std::string key) { provider_set_api_key(cfg_.api_key, std::move(key)); }
 
 std::expected<std::vector<std::string>, Error> OpenAiProvider::list_models() {
     std::string url = openai_models_url(cfg_.base_url);
@@ -349,4 +351,4 @@ bool openai_model_likely_reasoning(std::string_view model) {
     return false;
 }
 
-}  // namespace flagent
+}  // namespace moocode

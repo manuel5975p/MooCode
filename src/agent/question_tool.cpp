@@ -6,7 +6,9 @@
 #include <utility>
 #include <vector>
 
-namespace flagent {
+#include "agent/json_util.hpp"
+
+namespace moocode {
 
 // --- QuestionGate ---------------------------------------------------------
 
@@ -73,38 +75,27 @@ namespace {
 
 using Result = std::expected<std::string, Error>;
 
-// Require an object field `key` to be a present, non-null string.
-std::expected<std::string, Error> arg_string(const nlohmann::json& a,
-                                             const char* key) {
-    if (!a.is_object() || !a.contains(key) || !a[key].is_string())
-        return std::unexpected(
-            Error{.msg = std::string("missing or non-string argument: ") + key,
-                  .code = 0});
-    return a[key].get<std::string>();
-}
-
 }  // namespace
 
 Tool ask_user_tool(QuestionGate* gate) {
     ToolSpec spec{
         "ask_user",
-        "Ask the user a question with a list of options to pick from. "
-        "The user can pick one of the provided options, edit an option, "
-        "type a custom answer, or dismiss (Esc). When the user dismisses, "
-        "the tool returns \"USER_HALTED\" and you should continue without "
-        "an answer. Use this when you are genuinely uncertain and need "
-        "the user to decide — do not ask things you can determine yourself.",
+        "Ask user a question with list of options to pick from. "
+        "User can pick an option, edit one, type custom answer, or "
+        "dismiss (Esc). On dismiss, tool returns \"USER_HALTED\" — "
+        "continue without an answer. Use when genuinely uncertain and "
+        "need user to decide — do not ask things you can determine yourself.",
         nlohmann::json::parse(R"({
             "type":"object",
             "properties":{
               "question":{
                 "type":"string",
-                "description":"The question to ask the user"
+                "description":"Question to ask user"
               },
               "options":{
                 "type":"array",
                 "items":{"type":"string"},
-                "description":"List of options for the user to pick from",
+                "description":"Options for user to pick from",
                 "minItems":1
               }
             },
@@ -115,7 +106,7 @@ Tool ask_user_tool(QuestionGate* gate) {
         .spec = std::move(spec),
         .run = [gate](const nlohmann::json& a) -> Result {
             // --- Parse question ---
-            auto q = arg_string(a, "question");
+            auto q = ::moocode::json::arg_string(a, "question");
             if (!q) return std::unexpected(q.error());
             if (q->empty())
                 return std::unexpected(
@@ -186,4 +177,4 @@ Tool ask_user_tool(QuestionGate* gate) {
         }};
 }
 
-}  // namespace flagent
+}  // namespace moocode

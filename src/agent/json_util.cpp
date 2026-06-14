@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace flagent::json {
+namespace moocode::json {
 
 namespace {
 
@@ -86,4 +86,21 @@ std::string get_string_or(const nlohmann::json& value, std::string_view key,
     return it->get<std::string>();
 }
 
-}  // namespace flagent::json
+std::expected<std::string, Error> arg_string(const nlohmann::json& a,
+                                             std::string_view key) {
+    if (!a.is_object() || !a.contains(key) || !a[key].is_string())
+        return std::unexpected(
+            Error{.msg = std::string("missing or non-string argument: ") +
+                         std::string(key),
+                  .code = 0});
+    return a[key].get<std::string>();
+}
+
+std::expected<std::string, Error> get_string_or_default(
+    const nlohmann::json& value, std::string_view key, std::string def) {
+    auto v = get_string_opt(value, key);
+    if (!v) return std::unexpected(v.error());
+    return v->value_or(std::move(def));
+}
+
+}  // namespace moocode::json

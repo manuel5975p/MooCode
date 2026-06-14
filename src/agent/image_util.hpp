@@ -1,5 +1,5 @@
-#ifndef FLAGENT_IMAGE_UTIL_HPP
-#define FLAGENT_IMAGE_UTIL_HPP
+#ifndef MOOCODE_IMAGE_UTIL_HPP
+#define MOOCODE_IMAGE_UTIL_HPP
 
 // Image-detection and base64-encoding helpers shared across the mentions,
 // agent, and TUI layers. Header-only: depends only on STL + agent_types.
@@ -13,7 +13,7 @@
 #include "agent/strutil.hpp"  // base64_encode
 #include "agent/types.hpp"  // Error, ImageBlock
 
-namespace flagent {
+namespace moocode {
 
 // Image file extensions (lowercase, with dot). Ordered by commonality.
 inline constexpr std::string_view kImageExtensions[] = {
@@ -162,6 +162,6 @@ inline ScanImageResult scan_image_paths(std::string_view text,
     return result;
 }
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_IMAGE_UTIL_HPP
+#endif  // MOOCODE_IMAGE_UTIL_HPP

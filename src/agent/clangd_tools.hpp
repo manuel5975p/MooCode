@@ -1,5 +1,5 @@
-#ifndef FLAGENT_CLANGD_TOOLS_HPP
-#define FLAGENT_CLANGD_TOOLS_HPP
+#ifndef MOOCODE_CLANGD_TOOLS_HPP
+#define MOOCODE_CLANGD_TOOLS_HPP
 
 // clangd-backed code-intelligence tools: precise, semantic navigation that the
 // text tools (read_file/grep) cannot give. All share one long-lived ClangdSession
@@ -12,11 +12,17 @@
 #include <optional>
 #include <string>
 
-#include "agent/builtin_tools.hpp"  // ToolOptions (for rename's diff callback)
+// ToolOptions is only used by-value in rename_tool's declaration; forward-
+// declare it here and include builtin_tools.hpp in the .cpp file where the
+// definition is needed.
+// Forward-declared inside moocode namespace (the full definition is in
+// builtin_tools.hpp).
+
 #include "agent/lsp_client.hpp"
 #include "agent/tools.hpp"
 
-namespace flagent {
+namespace moocode {
+struct ToolOptions;
 
 struct ClangdToolsConfig {
     std::filesystem::path root;
@@ -44,6 +50,6 @@ Tool rename_tool(std::shared_ptr<lsp::ClangdSession> session, ToolOptions opts);
 void register_clangd_tools(ToolRegistry& reg, std::shared_ptr<lsp::ClangdSession> session,
                            ToolOptions opts);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_CLANGD_TOOLS_HPP
+#endif  // MOOCODE_CLANGD_TOOLS_HPP

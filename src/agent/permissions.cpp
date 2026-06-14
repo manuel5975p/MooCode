@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace flagent {
+namespace moocode {
 
 Permissions::Permissions(std::set<std::string> always, SaveFn save)
     : always_(std::move(always)), save_(std::move(save)) {}
@@ -31,4 +31,4 @@ bool decide(Permissions& perms, const ToolCall& tc, const Prompter& prompt) {
     return false;  // unreachable; all enumerators handled
 }
 
-}  // namespace flagent
+}  // namespace moocode

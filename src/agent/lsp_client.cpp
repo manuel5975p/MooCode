@@ -22,7 +22,7 @@
 
 namespace fs = std::filesystem;
 
-namespace flagent::lsp {
+namespace moocode::lsp {
 
 namespace {
 
@@ -395,7 +395,7 @@ std::expected<nlohmann::json, Error> ClangdSession::pump_until(
             nlohmann::json msg = std::move((*framed)->msg);
             in_buf_.erase(0, (*framed)->consumed);
 
-            static const bool debug = std::getenv("FLAGENT_LSP_DEBUG") != nullptr;
+            static const bool debug = std::getenv("MOOCODE_LSP_DEBUG") != nullptr;
             if (debug) {
                 std::string tag = msg.value("method", std::string());
                 if (tag.empty() && msg.contains("id")) tag = "response#" + msg["id"].dump();
@@ -506,7 +506,7 @@ std::expected<void, Error> ClangdSession::handshake() {
 
     nlohmann::json params{
         {"processId", static_cast<int>(::getpid())},
-        {"clientInfo", {{"name", "flagent"}}},
+        {"clientInfo", {{"name", "moocode"}}},
         {"rootUri", root_uri},
         {"rootPath", canon.string()},
         {"capabilities", caps},
@@ -620,4 +620,4 @@ bool ClangdSession::wait_for_index(std::optional<std::chrono::milliseconds> limi
     return index_done_;
 }
 
-}  // namespace flagent::lsp
+}  // namespace moocode::lsp

@@ -20,7 +20,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 using Kind = TuiState::ChatKind;
 using Status = TuiState::Status;
 
@@ -124,9 +124,58 @@ TEST("apply_message of an assistant turn seals the prose run") {
     s.apply_delta("prose", "");
     s.apply_message(assistant_call("c1", "list_dir", "{}"));
     s.apply_delta("more", "");  // next turn's prose must be a new entry
-    CHECK_EQ(s.chat().size(), std::size_t{2});
+    // prose, the inline tool-use row, then the next turn's prose.
+    CHECK_EQ(s.chat().size(), std::size_t{3});
+    CHECK(s.chat()[0].kind == Kind::Assistant);
     CHECK_EQ(s.chat()[0].text, std::string("prose"));
-    CHECK_EQ(s.chat()[1].text, std::string("more"));
+    CHECK(s.chat()[1].kind == Kind::ToolUse);
+    CHECK(s.chat()[2].kind == Kind::Assistant);
+    CHECK_EQ(s.chat()[2].text, std::string("more"));
+}
+
+TEST("a tool call adds an inline ToolUse chat row referencing its id") {
+    TuiState s;
+    s.apply_message(assistant_call("c1", "read_file", R"({"path":"llm.md"})"));
+    CHECK_EQ(s.chat().size(), std::size_t{1});
+    CHECK(s.chat()[0].kind == Kind::ToolUse);
+    CHECK_EQ(s.chat()[0].text, std::string("c1"));  // holds the tool_call_id
+    // The referenced activity is the source of truth and flips on its result.
+    s.apply_message(tool_result("c1", "file contents here"));
+    CHECK(s.chat()[0].kind == Kind::ToolUse);  // unchanged: single-sourced
+    CHECK(s.activity()[0].status == Status::Ok);
+}
+
+TEST("an inline ToolUse selection resolves to its activity in the detail pane") {
+    TuiState s;
+    s.apply_message(assistant_call("c1", "read_file", R"({"path":"a.cpp"})"));
+    s.apply_message(tool_result("c1", "line1\nline2"));
+    s.select(NodeKey{NodeKey::Pane::Chat, 0, "", ""});  // the inline tool row
+    auto d = s.detail_node();
+    CHECK(d.has_value());
+    CHECK(d && d->pane == NodeKey::Pane::Activity);
+    CHECK_EQ(d ? d->id : std::string(), std::string("c1"));
+}
+
+TEST("load replays tool calls as inline ToolUse rows") {
+    TuiState s;
+    Conversation conv;
+    conv.push_back(Message::user("hi"));
+    conv.push_back(assistant_call("c1", "list_dir", "{}"));
+    conv.push_back(tool_result("c1", "a\nb"));
+    s.load(conv);
+    CHECK_EQ(s.chat().size(), std::size_t{2});  // user prose + inline tool row
+    CHECK(s.chat()[1].kind == Kind::ToolUse);
+    CHECK(s.activity()[0].status == Status::Ok);
+}
+
+TEST("last_lines returns the final n non-blank-trailing lines") {
+    CHECK_EQ(last_lines("a\nb\nc\nd", 3), std::string("b\nc\nd"));
+    CHECK_EQ(last_lines("only", 3), std::string("only"));
+    CHECK_EQ(last_lines("a\nb", 3), std::string("a\nb"));  // fewer than n
+    CHECK_EQ(last_lines("x\ny\n\n\n", 3), std::string("x\ny"));  // drop trailing blanks
+    CHECK_EQ(last_lines("a\r\nb\r\n", 3), std::string("a\nb"));  // strip CR
+    CHECK_EQ(last_lines("", 3), std::string(""));
+    CHECK_EQ(last_lines("a\nb", 0), std::string(""));
 }
 
 TEST("tool calls become Running activities, then flip on their result") {

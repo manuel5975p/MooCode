@@ -1,4 +1,4 @@
-# flagent
+# moocode
 
 A minimal but real coding agent in C++23: an LLM loop + tools, talking to any
 OpenAI-compatible `/chat/completions` endpoint (OpenAI, OpenRouter, vLLM,
@@ -20,7 +20,7 @@ cmake --build build
 
 # Run — defaults to MiniMax's OpenAI-compatible endpoint
 export LLM_API_KEY=...
-./build/src/flagent "summarize the source files in src/"
+./build/src/moocode "summarize the source files in src/"
 ```
 
 ## Build
@@ -40,7 +40,7 @@ Toggle tests off with `-DBUILD_TESTING=OFF`.
 
 ### Bundled static libcurl
 
-By default (`-DFLAGENT_BUNDLED_CURL=ON`), `cmake/BundledCurl.cmake` builds a
+By default (`-DMOOCODE_BUNDLED_CURL=ON`), `cmake/BundledCurl.cmake` builds a
 **fully static**, feature-stripped curl chain from pinned, hash-verified source
 tarballs via CMake `ExternalProject`:
 
@@ -50,7 +50,7 @@ zlib 1.3.1 → nghttp2 1.65.0 → OpenSSL 3.5.0 → curl 8.15.0
 
 Result: HTTPS + HTTP/2 + gzip only. The binary's sole runtime deps are the
 C/C++ runtime (`libc`/`libstdc++`/`libm`/`libgcc_s`). Tarballs are cached in
-`.deps-cache/` and reused across clean builds. `-DFLAGENT_BUNDLED_CURL=OFF`
+`.deps-cache/` and reused across clean builds. `-DMOOCODE_BUNDLED_CURL=OFF`
 falls back to `find_package(CURL)` against the system libcurl.
 
 ## Usage
@@ -59,26 +59,26 @@ falls back to `find_package(CURL)` against the system libcurl.
 
 ```sh
 # Prompt from argv
-./build/src/flagent "explain what this project does"
+./build/src/moocode "explain what this project does"
 
 # Prompt from stdin (pipe/redirect)
-echo "fix the failing test" | ./build/src/flagent --yes
-cat prompt.txt | ./build/src/flagent
+echo "fix the failing test" | ./build/src/moocode --yes
+cat prompt.txt | ./build/src/moocode
 
 # Override endpoint / model / key
-./build/src/flagent -b https://api.openai.com/v1 -m gpt-4o-mini -k sk-... "hi"
+./build/src/moocode -b https://api.openai.com/v1 -m gpt-4o-mini -k sk-... "hi"
 
 # Anthropic-native endpoint (auto-detected from hostname)
-LLM_API_KEY=sk-ant-... ./build/src/flagent -m claude-sonnet-4-6 "hi"
+LLM_API_KEY=sk-ant-... ./build/src/moocode -m claude-sonnet-4-6 "hi"
 
 # Anthropic-compatible third parties — pass the bare ".../anthropic" base
-./build/src/flagent -b https://api.minimax.io/anthropic  -m MiniMax-M3      -k ... "hi"
-./build/src/flagent -b https://api.deepseek.com/anthropic -m deepseek-v4-pro -k ... "hi"
+./build/src/moocode -b https://api.minimax.io/anthropic  -m MiniMax-M3      -k ... "hi"
+./build/src/moocode -b https://api.deepseek.com/anthropic -m deepseek-v4-pro -k ... "hi"
 
 # Use a preset (fills base-url + model; OpenAI-native endpoint)
-./build/src/flagent -p minimax        -k ... "hi"   # MiniMax-M3
-./build/src/flagent -p deepseek-pro   -k ... "hi"   # deepseek-v4-pro
-./build/src/flagent -p deepseek-flash -k ... "hi"   # deepseek-v4-flash
+./build/src/moocode -p minimax        -k ... "hi"   # MiniMax-M3
+./build/src/moocode -p deepseek-pro   -k ... "hi"   # deepseek-v4-pro
+./build/src/moocode -p deepseek-flash -k ... "hi"   # deepseek-v4-flash
 ```
 
 ### Interactive TUI
@@ -86,7 +86,7 @@ LLM_API_KEY=sk-ant-... ./build/src/flagent -m claude-sonnet-4-6 "hi"
 Run with no argv prompt and a terminal on stdin:
 
 ```sh
-./build/src/flagent
+./build/src/moocode
 ```
 
 A full-screen two-pane FTXUI interface opens:
@@ -132,7 +132,7 @@ shows a summary and offers autocomplete as you type an `@`-token.
 ### CLI options
 
 ```
-flagent [options] [prompt]
+moocode [options] [prompt]
   -y, --yes              Auto-approve all tools (skip permission prompts)
   -s, --system <str>     Override the system prompt
   -n, --max-iters <n>    Max agent iterations (0 = unlimited, default)
@@ -165,19 +165,19 @@ Config precedence: **flags > `LLM_*` env vars > active profile >
 | `LLM_BASE_URL` | API endpoint base URL | OpenAI: `https://api.minimax.io/v1`<br>Anthropic: `https://api.anthropic.com/v1` |
 | `LLM_API_KEY` | API key (Bearer / x-api-key) | — |
 | `LLM_MODEL` | Model name | OpenAI: `MiniMax-M3`<br>Anthropic: `claude-sonnet-4-6` |
-| `FLAGENT_HOME` | State directory | `~/.flagent` |
-| `FLAGENT_RTK` | rtk output-compaction (`0`/`1`) | on when `rtk` is on `$PATH` |
+| `MOOCODE_HOME` | State directory | `~/.moo` |
+| `MOOCODE_RTK` | rtk output-compaction (`0`/`1`) | on when `rtk` is on `$PATH` |
 | `SEARXNG_URL` | SearXNG instance URL | `http://localhost:8080` |
 | `TAVILY_API_KEY` | Tavily API key (search fallback) | — |
 | `CLANGD_PATH` | clangd binary | `clangd` |
 | `CLANGD_COMPILE_COMMANDS_DIR` | compile_commands.json location | `<root>/build` or `<root>` |
 | `CLANGD_INDEX_WAIT_MS` | Wait for clangd index on `rename` | `0` (don't block) |
-| `FLAGENT_LSP_DEBUG` | Trace LSP messages to stderr | — |
+| `MOOCODE_LSP_DEBUG` | Trace LSP messages to stderr | — |
 
-### Persistent state (`~/.flagent/`)
+### Persistent state (`~/.moo/`)
 
 ```
-~/.flagent/
+~/.moo/
   settings.toml       base_url, model, provider, profile, max_iterations, max_tokens,
                       effort, temperature, thinking, rtk, context_window, [profiles.*]
   credentials.toml    per-profile API keys  (chmod 0600)
@@ -254,7 +254,7 @@ When [`rtk`](https://crates.io/crates/rtk) (a token-optimizing CLI proxy) is on
 `$PATH`, `run_bash` transparently rewrites simple allowlisted commands
 (`ls tree grep find cargo wc env diff`) to `rtk <cmd>` to shrink their output;
 pipelines, redirects and non-allowlisted commands run verbatim, and a leading
-`\ ` forces raw output. Toggle with `--rtk`/`--no-rtk`, `FLAGENT_RTK=0|1`, or
+`\ ` forces raw output. Toggle with `--rtk`/`--no-rtk`, `MOOCODE_RTK=0|1`, or
 `rtk = true|false` in `settings.toml` (default on when available).
 
 ### Local git tools (read-only)
@@ -336,7 +336,7 @@ agent_lsp        clangd-backed code-intelligence tools (LSP JSON-RPC over stdio)
 agent_permissions  screen-free approval policy: allowlist + decide()
 agent_diff       pure LCS line diff (no I/O)
 agent_mentions   @-mention expansion (glob, dir listing, sandboxed)
-agent_persist    ~/.flagent TOML store (toml++ confined to one TU)
+agent_persist    ~/.moo TOML store (toml++ confined to one TU)
   ↑
 agent_core       The agent loop: assemble, dispatch tools, manage history
 agent_question   ask_user tool + QuestionGate
@@ -344,7 +344,7 @@ agent_subagent   spawn_subagent tool
   ↑
 agent_tui        Full-screen FTXUI TUI (two-pane, streaming, diff rendering)
   ↑
-flagent (main)   CLI entry point: config resolution, tool registration, dispatch
+moocode (main)   CLI entry point: config resolution, tool registration, dispatch
 ```
 
 ### Error handling
@@ -371,7 +371,7 @@ fed back to the model so it can self-correct.
   abort loudly and leave the file untouched.
 - **`run_bash`:** forks in its own process group, killed on timeout.
 - **Permissions:** every tool call is gated; the always-allow set persists to
-  `~/.flagent/permissions.toml`.
+  `~/.moo/permissions.toml`.
 
 ### Streaming & display
 

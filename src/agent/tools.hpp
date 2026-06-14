@@ -1,5 +1,5 @@
-#ifndef FLAGENT_TOOLS_HPP
-#define FLAGENT_TOOLS_HPP
+#ifndef MOOCODE_TOOLS_HPP
+#define MOOCODE_TOOLS_HPP
 
 // A registry mapping tool names to (schema, callable). The agent advertises
 // specs() to the model and dispatches model-chosen calls through invoke().
@@ -13,7 +13,7 @@
 
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 struct Tool {
     ToolSpec spec;
@@ -45,6 +45,13 @@ private:
     std::vector<Tool> tools_;  // insertion order preserved
 };
 
-}  // namespace flagent
+// Render registered tool names as "  - name: description" lines. When
+// `desc_clip` > 0, each description is trimmed to its first line and capped
+// at `desc_clip` bytes with an ellipsis (for the system-prompt listing where
+// descriptions are also sent in the JSON schema). When 0, the full description
+// is used (for sub-agent model listings). Trailing newline is dropped.
+std::string tool_list(const ToolRegistry& reg, std::size_t desc_clip = 0);
 
-#endif  // FLAGENT_TOOLS_HPP
+}  // namespace moocode
+
+#endif  // MOOCODE_TOOLS_HPP

@@ -1,5 +1,5 @@
-#ifndef FLAGENT_RTK_HPP
-#define FLAGENT_RTK_HPP
+#ifndef MOOCODE_RTK_HPP
+#define MOOCODE_RTK_HPP
 
 // Pure decision: should a run_bash command be wrapped as `rtk <cmd>` to shrink
 // its output? Only simple single-command invocations of an allowlisted program
@@ -11,7 +11,7 @@
 #include <string>
 #include <string_view>
 
-namespace flagent {
+namespace moocode {
 
 // Rewritten "rtk <cmd>" when `cmd` is a bare allowlisted invocation, else
 // nullopt (run verbatim). The leading "\ " raw-escape yields nullopt here; the
@@ -23,6 +23,6 @@ std::optional<std::string> rtk_rewrite(std::string_view cmd);
 // call site applies this so the escape never reaches /bin/sh. Total.
 std::string rtk_strip_escape(std::string_view cmd);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_RTK_HPP
+#endif  // MOOCODE_RTK_HPP

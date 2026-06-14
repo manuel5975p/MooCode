@@ -1,7 +1,7 @@
-#ifndef FLAGENT_BUILTIN_TOOLS_HPP
-#define FLAGENT_BUILTIN_TOOLS_HPP
+#ifndef MOOCODE_BUILTIN_TOOLS_HPP
+#define MOOCODE_BUILTIN_TOOLS_HPP
 
-// The standard tool set that makes flagent a usable coding agent: filesystem
+// The standard tool set that makes moocode a usable coding agent: filesystem
 // read/write/edit/list plus a sandboxed shell. All filesystem paths are
 // confined under `root`; the shell runs with `root` as its working directory.
 
@@ -12,7 +12,7 @@
 
 #include "agent/tools.hpp"
 
-namespace flagent {
+namespace moocode {
 
 // A file mutation reported by write_file/edit_file, carrying enough to compute a
 // diff. `old_content` is the file's prior contents ("" if it did not exist).
@@ -43,6 +43,6 @@ Tool run_bash_tool(ToolOptions opts);
 // Register the full builtin set into `reg`.
 void register_builtin_tools(ToolRegistry& reg, ToolOptions opts);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_BUILTIN_TOOLS_HPP
+#endif  // MOOCODE_BUILTIN_TOOLS_HPP

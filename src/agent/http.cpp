@@ -1,4 +1,5 @@
 #include "agent/http.hpp"
+#include "agent/http_detail.hpp"
 
 #include "agent/strutil.hpp"  // hex_val
 
@@ -12,7 +13,7 @@
 
 #include <curl/curl.h>
 
-namespace flagent::http {
+namespace moocode::http {
 
 namespace {
 
@@ -289,4 +290,4 @@ void global_cleanup() {
     curl_global_cleanup();
 }
 
-}  // namespace flagent::http
+}  // namespace moocode::http

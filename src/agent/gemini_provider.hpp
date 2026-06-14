@@ -1,5 +1,5 @@
-#ifndef FLAGENT_GEMINI_PROVIDER_HPP
-#define FLAGENT_GEMINI_PROVIDER_HPP
+#ifndef MOOCODE_GEMINI_PROVIDER_HPP
+#define MOOCODE_GEMINI_PROVIDER_HPP
 
 // Google Gemini-native Provider: speaks the Generative Language API
 // (`/v1beta/models/<model>:generateContent` and `:streamGenerateContent`) used
@@ -30,11 +30,10 @@
 
 #include <nlohmann/json.hpp>
 
-#include "agent/anthropic_provider.hpp"  // ProviderKind (shared enum)
 #include "agent/provider.hpp"
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 struct GeminiConfig {
     std::string base_url;  // e.g. "https://generativelanguage.googleapis.com/v1beta"
@@ -46,6 +45,9 @@ struct GeminiConfig {
     std::string reasoning_effort;  // "low"/"medium"/"high"; "" => omit thinkingConfig
     std::optional<bool> thinking;  // nullopt => omit; true/false => thinkingConfig
     int max_tokens = 0;            // <= 0 => omit; else maxOutputTokens
+
+    GeminiConfig() = default;
+    explicit GeminiConfig(const struct ProviderConnection& c);
 };
 
 // Map an effort label to a Gemini thinkingBudget in tokens (minimal 1024,
@@ -120,6 +122,6 @@ private:
     std::vector<std::string> headers() const;
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_GEMINI_PROVIDER_HPP
+#endif  // MOOCODE_GEMINI_PROVIDER_HPP

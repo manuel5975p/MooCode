@@ -4,7 +4,7 @@
 # Build types: the standard set plus the project's custom LTO_MINSIZE (defined in
 # the root CMakeLists). Its CMAKE_<LANG>_FLAGS_LTO_MINSIZE / CMAKE_EXE_LINKER_FLAGS_
 # LTO_MINSIZE are appended to every target below automatically — the static libs
-# carry LTO bitcode and the final `flagent` link runs full LTO + strip. No
+# carry LTO bitcode and the final `moocode` link runs full LTO + strip. No
 # per-target flags are needed here. Build it with:
 #   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=LTO_MINSIZE && cmake --build build
 
@@ -68,7 +68,7 @@ add_library(agent_diff STATIC agent/diff.cpp)
 target_include_directories(agent_diff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(agent_diff PUBLIC agent_types)
 
-# --- agent_persist: ~/.flagent TOML store (confines toml.hpp to one TU) -------
+# --- agent_persist: ~/.moo TOML store (confines toml.hpp to one TU) -------
 add_library(agent_persist STATIC agent/persist.cpp)
 target_include_directories(agent_persist
                            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
@@ -105,13 +105,13 @@ target_link_libraries(agent_tui PUBLIC agent_core agent_permissions agent_diff
                       PRIVATE agent_persist agent_mentions agent_syntax agent_json
                           ftxui::screen ftxui::dom ftxui::component)
 
-# --- flagent: the CLI executable --------------------------------------------
-add_executable(flagent agent/main.cpp)
+# --- moocode: the CLI executable --------------------------------------------
+add_executable(moocode agent/main.cpp)
 # ProgramOptions.hxx is a single header living at the project root.
-target_include_directories(flagent PRIVATE ${PROJECT_SOURCE_DIR})
+target_include_directories(moocode PRIVATE ${PROJECT_SOURCE_DIR})
 # agent_tui transitively pulls in agent_core (-> agent_provider, agent_tools,
 # agent_http, agent_mentions), agent_permissions, agent_diff and agent_persist,
 # so only the libraries not reachable through it are listed explicitly. Listing
 # the transitively-linked archives again makes the linker warn about (and ignore)
 # duplicate libraries.
-target_link_libraries(flagent PRIVATE agent_tui agent_search agent_gitea agent_git agent_subagent agent_lsp agent_question)
+target_link_libraries(moocode PRIVATE agent_tui agent_search agent_gitea agent_git agent_subagent agent_lsp agent_question)

@@ -1,5 +1,5 @@
-#ifndef FLAGENT_AGENT_HPP
-#define FLAGENT_AGENT_HPP
+#ifndef MOOCODE_AGENT_HPP
+#define MOOCODE_AGENT_HPP
 
 // The loop that turns a Provider + ToolRegistry into an agent: send the
 // conversation, run any requested tools, feed results back, repeat until the
@@ -19,7 +19,7 @@
 #include "agent/tools.hpp"
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 struct AgentConfig {
     std::optional<std::uint32_t> max_iterations;  // nullopt => unlimited; else runaway backstop
@@ -35,6 +35,11 @@ struct AgentConfig {
     // exceeds the budget. Estimate mirrors estimated_tokens (≈ chars/4).
     std::size_t compact_keep_tail_tokens = 4096;
 };
+
+// Rough token estimate: sum of character lengths / 4, same heuristic the TUI
+// status bar and compact() use. Uses std::size_t internally to avoid overflow
+// on extremely large conversations. pre: n >= 0.
+int estimated_tokens(const Conversation& conv);
 
 class Agent {
 public:
@@ -136,10 +141,6 @@ public:
     std::expected<Conversation, Error> compact(
         std::string_view instructions = {});
 
-    // Rough token estimate: sum of character lengths / 4, same heuristic the
-    // TUI status bar uses for its live counter. pre: n >= 0.
-    static int estimated_tokens(const Conversation& conv);
-
 private:
     Provider* provider_;                  // active provider (borrowed or owned_)
     std::unique_ptr<Provider> owned_;     // set by set_provider; null while borrowing
@@ -156,6 +157,6 @@ private:
     void append(Message m);
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_AGENT_HPP
+#endif  // MOOCODE_AGENT_HPP

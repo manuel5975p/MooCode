@@ -5,7 +5,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 // The class migration itself is the regression net (every site compiling + the
 // rest of the suite passing proves each construction used a legal field combo).
@@ -59,11 +59,10 @@ TEST("Message::tool sets id, content, failure; role Tool") {
     CHECK(!ok_err.tool_failed());
 }
 
-TEST("Message::from_fields rebuilds an arbitrary persisted message") {
+TEST("Message role factories build correct roles") {
     std::vector<ToolCall> calls;
     calls.push_back(ToolCall{.id = "t1", .name = "n", .arguments_json = "{}"});
-    Message m = Message::from_fields(Role::Assistant, "txt", std::move(calls),
-                                     "", {}, false);
+    Message m = Message::assistant("txt", std::move(calls));
     CHECK(m.role() == Role::Assistant);
     CHECK_EQ(m.content(), std::string("txt"));
     CHECK_EQ(m.tool_calls().size(), std::size_t{1});

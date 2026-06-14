@@ -1,5 +1,5 @@
-#ifndef FLAGENT_TUI_WORKER_HPP
-#define FLAGENT_TUI_WORKER_HPP
+#ifndef MOOCODE_TUI_WORKER_HPP
+#define MOOCODE_TUI_WORKER_HPP
 
 // Background work queue for the TUI: a single worker thread that drains
 // submitted WorkItems (prompts, compactions, model detections) one at a time so
@@ -18,7 +18,7 @@
 
 #include "agent/types.hpp"  // ContentPart
 
-namespace flagent {
+namespace moocode {
 
 // One unit of background work for the TUI worker thread. `text` is the prompt
 // text for Prompt, the additional instructions for Compact, and the profile
@@ -76,6 +76,6 @@ private:
     std::thread t_;
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_TUI_WORKER_HPP
+#endif  // MOOCODE_TUI_WORKER_HPP

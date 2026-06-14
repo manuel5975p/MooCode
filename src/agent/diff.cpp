@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -136,4 +136,4 @@ std::string render_ansi_diff(const std::vector<DiffLine>& lines) {
     return out;
 }
 
-}  // namespace flagent
+}  // namespace moocode

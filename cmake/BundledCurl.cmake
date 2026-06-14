@@ -1,6 +1,6 @@
 # BundledCurl.cmake — build a feature-stripped, fully static libcurl from source.
 #
-# flagent only ever performs HTTPS GET/POST with custom headers, a write
+# moocode only ever performs HTTPS GET/POST with custom headers, a write
 # callback, a timeout and gzip/deflate decompression (see agent/http.cpp). The
 # distro libcurl drags in ~20 shared objects for protocols we never touch
 # (HTTP/3, SSH, IMAP/SMTP/POP3/RTSP/LDAP, krb5, brotli, zstd, idn2, psl, …).

@@ -9,7 +9,7 @@
 #include "temp_dir.hpp"
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 
@@ -492,7 +492,7 @@ TEST("persist: new_conversation_id is sortable and stable per cwd") {
     CHECK(c.substr(c.size() - 8) != a.substr(a.size() - 8));
 }
 
-TEST("persist: conversations_dir and flagent_home honor empty home") {
+TEST("persist: conversations_dir and moocode_home honor empty home") {
     CHECK(conversations_dir("").empty());
     CHECK(!conversations_dir("/x").empty());
 }

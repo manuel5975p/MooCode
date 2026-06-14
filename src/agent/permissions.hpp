@@ -1,9 +1,9 @@
-#ifndef FLAGENT_PERMISSIONS_HPP
-#define FLAGENT_PERMISSIONS_HPP
+#ifndef MOOCODE_PERMISSIONS_HPP
+#define MOOCODE_PERMISSIONS_HPP
 
 // Tool-call approval policy: an in-memory allowlist plus the decision glue both
 // run modes share. Persistence is pluggable — a SaveFn hook is fired after every
-// new always-grant, so the actual storage (TOML under ~/.flagent, a test lambda,
+// new always-grant, so the actual storage (TOML under ~/.moo, a test lambda,
 // or nothing at all) lives outside this layer and toml.hpp stays out of it.
 
 #include <functional>
@@ -12,7 +12,7 @@
 
 #include "agent/types.hpp"  // ToolCall
 
-namespace flagent {
+namespace moocode {
 
 // What the user chose when asked to approve a tool call.
 enum class Approval { Once, Session, Always, Deny };
@@ -53,6 +53,6 @@ using Prompter = std::function<Approval(const ToolCall&)>;
 // returns false and records nothing. pre: prompt is callable. post: no throw.
 bool decide(Permissions& perms, const ToolCall& tc, const Prompter& prompt);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_PERMISSIONS_HPP
+#endif  // MOOCODE_PERMISSIONS_HPP

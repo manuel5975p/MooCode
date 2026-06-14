@@ -3,6 +3,7 @@
 #include "agent/proc.hpp"  // run_process, select_lines, kProcOutputCap
 
 #include "agent/fsutil.hpp"
+#include "agent/json_util.hpp"
 #include "agent/rtk.hpp"  // rtk_rewrite, rtk_strip_escape
 #include "agent/strutil.hpp"  // default_trunc_marker
 
@@ -15,21 +16,11 @@
 
 namespace fs = std::filesystem;
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
 using Result = std::expected<std::string, Error>;
-
-// Require an object field `key` to be a present, non-null string.
-std::expected<std::string, Error> arg_string(const nlohmann::json& a,
-                                             const char* key) {
-    if (!a.is_object() || !a.contains(key) || !a[key].is_string())
-        return std::unexpected(
-            Error{.msg = std::string("missing or non-string argument: ") + key, .code = 0});
-    return a[key].get<std::string>();
-}
-
 // Lift a filesystem std::error_code into our Error type with a context prefix.
 // Returns void-success on clear ec so it composes through .and_then().
 std::expected<void, Error> ec_check(const std::error_code& ec,
@@ -79,20 +70,19 @@ Result run_command(const std::string& cmd, const fs::path& cwd, int timeout_secs
 Tool read_file_tool(ToolOptions opts) {
     ToolSpec spec{
         "read_file",
-        "Return a file's contents. Optional `offset` (1-based line to start at) "
-        "and `lines` (max lines to return) read only that window; omit both to "
-        "read the whole file. Sandboxed to the project root; large reads are "
-        "safely truncated with a marker.",
+        "Read file contents. `offset` (1-based start line) + `lines` (max "
+        "lines) read that window; omit both for whole file. Sandboxed to "
+        "project root; big reads truncated with marker.",
         nlohmann::json::parse(R"({
             "type":"object",
             "properties":{
               "path":{"type":"string","description":"file path"},
-              "offset":{"type":"integer","description":"optional 1-based line number to start at"},
-              "lines":{"type":"integer","description":"optional maximum number of lines to return"}},
+              "offset":{"type":"integer","description":"1-based start line"},
+              "lines":{"type":"integer","description":"max lines to return"}},
             "required":["path"]})")};
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
-        return arg_string(a, "path").and_then([&](std::string path) -> Result {
+        return ::moocode::json::arg_string(a, "path").and_then([&](std::string path) -> Result {
             return resolve_in_root(opts.root, path)
                 .and_then([&](fs::path r) {
                     return require_regular_file(std::move(r), path);
@@ -130,8 +120,8 @@ Tool read_file_tool(ToolOptions opts) {
 Tool write_file_tool(ToolOptions opts) {
     ToolSpec spec{
         "write_file",
-        "Create or overwrite a file with exactly `content`. Sandboxed to the "
-        "project root; parent directories are created.",
+        "Create or overwrite file with `content`. Sandboxed to project root; "
+        "parent dirs created.",
         nlohmann::json::parse(R"({
             "type":"object",
             "properties":{
@@ -140,9 +130,9 @@ Tool write_file_tool(ToolOptions opts) {
             "required":["path","content"]})")};
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
-        auto path = arg_string(a, "path");
+        auto path = ::moocode::json::arg_string(a, "path");
         if (!path) return std::unexpected(path.error());
-        auto content = arg_string(a, "content");
+        auto content = ::moocode::json::arg_string(a, "content");
         if (!content) return std::unexpected(content.error());
 
         return resolve_in_root(opts.root, *path)
@@ -183,9 +173,8 @@ Tool write_file_tool(ToolOptions opts) {
 Tool edit_file_tool(ToolOptions opts) {
     ToolSpec spec{
         "edit_file",
-        "Replace the exact text `old` with `new` in a file. `old` must occur "
-        "exactly once; otherwise the file is left untouched and an error is "
-        "returned. Sandboxed to the project root.",
+        "Replace text `old` with `new` in file. `old` must occur exactly "
+        "once, else no change + error. Sandboxed to project root.",
         nlohmann::json::parse(R"({
             "type":"object",
             "properties":{
@@ -195,11 +184,11 @@ Tool edit_file_tool(ToolOptions opts) {
             "required":["path","old","new"]})")};
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
-        auto path = arg_string(a, "path");
+        auto path = ::moocode::json::arg_string(a, "path");
         if (!path) return std::unexpected(path.error());
-        auto old_s = arg_string(a, "old");
+        auto old_s = ::moocode::json::arg_string(a, "old");
         if (!old_s) return std::unexpected(old_s.error());
-        auto new_s = arg_string(a, "new");
+        auto new_s = ::moocode::json::arg_string(a, "new");
         if (!new_s) return std::unexpected(new_s.error());
         if (old_s->empty())
             return std::unexpected(Error{.msg = "`old` must be non-empty", .code = 0});
@@ -245,15 +234,15 @@ Tool edit_file_tool(ToolOptions opts) {
 Tool list_dir_tool(ToolOptions opts) {
     ToolSpec spec{
         "list_dir",
-        "List a directory's entries, sorted, with a trailing / on "
-        "subdirectories. Sandboxed to the project root.",
+        "List dir entries, sorted, trailing / on subdirs. Sandboxed to "
+        "project root.",
         nlohmann::json::parse(R"({
             "type":"object",
             "properties":{"path":{"type":"string","description":"directory path"}},
             "required":["path"]})")};
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
-        return arg_string(a, "path").and_then([&](std::string path) -> Result {
+        return ::moocode::json::arg_string(a, "path").and_then([&](std::string path) -> Result {
             return resolve_in_root(opts.root, path)
                 .and_then(
                     [&](fs::path r) { return require_directory(std::move(r), path); })
@@ -298,22 +287,21 @@ Tool list_dir_tool(ToolOptions opts) {
 Tool run_bash_tool(ToolOptions opts) {
     ToolSpec spec{
         "run_bash",
-        "Run a shell command via /bin/sh from the project root. Returns merged "
-        "stdout+stderr plus the exit code; output is capped and the command is "
-        "killed on timeout. Optional `max_bytes` and `max_lines` control the "
-        "output cap — defaults: 1 MiB bytes, unlimited lines. Prefer the git_* "
-        "tools over running `git` here; they return compact, token-optimized "
-        "output.",
+        "Run shell command via /bin/sh from project root. Returns merged "
+        "stdout+stderr + exit code; output capped, command killed on timeout. "
+        "`max_bytes` + `max_lines` set output cap — defaults: 1 MiB, unlimited "
+        "lines. Prefer git_* tools over `git` here; they return compact, "
+        "token-optimized output.",
         nlohmann::json::parse(R"json({
             "type":"object",
             "properties":{
               "cmd":{"type":"string","description":"shell command"},
-              "max_bytes":{"type":"integer","description":"optional max output bytes (default 1 MiB)"},
-              "max_lines":{"type":"integer","description":"optional max output lines"}},
+              "max_bytes":{"type":"integer","description":"max output bytes (default 1 MiB)"},
+              "max_lines":{"type":"integer","description":"max output lines"}},
             "required":["cmd"]})json")};
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
-        return arg_string(a, "cmd").and_then([&](std::string cmd) -> Result {
+        return ::moocode::json::arg_string(a, "cmd").and_then([&](std::string cmd) -> Result {
             // rtk rewrite: only when enabled+available (opts.rtk already ANDs
             // detection with config, set in main). A leading "\ " escape forces
             // raw output (the escape is stripped, no rewrite).
@@ -349,4 +337,4 @@ void register_builtin_tools(ToolRegistry& reg, ToolOptions opts) {
     reg.add(run_bash_tool(opts));
 }
 
-}  // namespace flagent
+}  // namespace moocode

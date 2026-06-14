@@ -10,7 +10,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 using namespace std::chrono_literals;
 
 namespace {

@@ -10,7 +10,7 @@
 #include "agent/stream_detail.hpp"  // ThinkSplitter
 #include "agent/types.hpp"  // ToolCall
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -135,6 +135,11 @@ void parse_sse_chunk(std::string& buffer, std::vector<std::string>& out,
     buffer.erase(0, start);
 }
 
+StreamAccumulator::StreamAccumulator()
+    : splitter_(std::make_unique<ThinkSplitter>()) {}
+
+StreamAccumulator::~StreamAccumulator() = default;
+
 StreamAccumulator::Added StreamAccumulator::ingest(const nlohmann::json& chunk) {
     Added added;
     if (!chunk.is_object()) return added;
@@ -168,7 +173,7 @@ StreamAccumulator::Added StreamAccumulator::ingest(const nlohmann::json& chunk) 
     if (auto it = delta.find("content"); it != delta.end() && it->is_string()) {
         std::string c = it->get<std::string>();
         content_ += c;
-        ThinkSplitter::Parts p = splitter_.feed(c);
+        ThinkSplitter::Parts p = splitter_->feed(c);
         added.answer += p.answer;
         reasoning_ += p.reasoning;
         added.reasoning += p.reasoning;
@@ -414,4 +419,4 @@ Turn GeminiStreamAccumulator::finish() {
     return turn;
 }
 
-}  // namespace flagent
+}  // namespace moocode

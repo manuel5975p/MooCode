@@ -1,5 +1,5 @@
-#ifndef FLAGENT_STREAM_HPP
-#define FLAGENT_STREAM_HPP
+#ifndef MOOCODE_STREAM_HPP
+#define MOOCODE_STREAM_HPP
 
 // Pure, network-free building blocks for streaming chat completions. The
 // transport (http) feeds raw bytes in; these turn them into displayable
@@ -7,6 +7,7 @@
 // the fiddly bits (SSE framing, tags split across packets, fragmented
 // tool-call arguments) are exhaustively unit-testable.
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -15,9 +16,10 @@
 #include <nlohmann/json.hpp>
 
 #include "agent/provider.hpp"  // Turn
-#include "agent/stream_detail.hpp"  // ThinkSplitter (StreamAccumulator member)
 
-namespace flagent {
+namespace moocode {
+
+class ThinkSplitter;  // defined in stream_detail.hpp (included by stream.cpp only)
 
 // Pull complete Server-Sent-Events "data:" payloads out of a growing buffer.
 // Each payload's JSON text is appended to `out`; `done` is set if the OpenAI
@@ -48,6 +50,9 @@ Usage parse_gemini_usage(const nlohmann::json& u);
 // the answer/reasoning text contributed by each chunk for live display.
 class StreamAccumulator {
 public:
+    StreamAccumulator();
+    ~StreamAccumulator();
+
     struct Added {
         std::string answer;     // delta.content outside <think>
         std::string reasoning;  // delta.reasoning_content + content inside <think>
@@ -71,7 +76,7 @@ private:
         bool seen = false;
     };
 
-    ThinkSplitter splitter_;
+    std::unique_ptr<ThinkSplitter> splitter_;
     std::string content_;        // raw delta.content concatenation => Turn.text
     std::string reasoning_;      // reasoning_content + <think> bytes => Turn.reasoning
     std::string finish_reason_;
@@ -171,6 +176,6 @@ private:
     Usage usage_;                // last usageMetadata seen
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_STREAM_HPP
+#endif  // MOOCODE_STREAM_HPP

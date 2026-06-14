@@ -1,5 +1,5 @@
-#ifndef FLAGENT_OPENAI_PROVIDER_HPP
-#define FLAGENT_OPENAI_PROVIDER_HPP
+#ifndef MOOCODE_OPENAI_PROVIDER_HPP
+#define MOOCODE_OPENAI_PROVIDER_HPP
 
 // OpenAI-compatible Provider: speaks the /chat/completions wire format, which
 // OpenAI, OpenRouter, vLLM, llama.cpp and Ollama all accept. The request build
@@ -16,7 +16,7 @@
 #include "agent/provider.hpp"
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 struct OpenAiConfig {
     std::string base_url;       // e.g. "https://api.minimax.io/v1" (no trailing /)
@@ -29,11 +29,10 @@ struct OpenAiConfig {
     std::string reasoning_effort;        // "low"/"medium"/"high"; "" => omit
     std::optional<bool> thinking;        // nullopt => omit; else thinking:{type}
     int max_tokens = 0;                  // <= 0 => omit; else max_tokens
-};
 
-// Strip a trailing slash so base_url + "/chat/completions" is well-formed.
-// pre: none. post: base_url has no trailing '/'.
-void normalize_base_url(std::string& base_url);
+    OpenAiConfig() = default;
+    explicit OpenAiConfig(const struct ProviderConnection& c);
+};
 
 // Compose the Chat Completions endpoint URL from a base URL. The OpenAI path is
 // "<base>/v1/chat/completions"; a base already ending in "/v1" gets only
@@ -103,6 +102,6 @@ private:
     OpenAiConfig cfg_;
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_OPENAI_PROVIDER_HPP
+#endif  // MOOCODE_OPENAI_PROVIDER_HPP

@@ -7,7 +7,7 @@
 #include "agent/stream_detail.hpp"  // ThinkSplitter (white-box tests)
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 // --- ThinkSplitter ----------------------------------------------------------
 

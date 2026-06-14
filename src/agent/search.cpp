@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <ctime>
 #include <fstream>
+
+#include "agent/http_detail.hpp"
 #include <iterator>
 #include <memory>
 #include <utility>
@@ -13,7 +15,7 @@
 #include "agent/http.hpp"
 #include "agent/json_util.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -414,13 +416,13 @@ Tool web_search_tool(SearchConfig cfg) {
 
     ToolSpec spec{
         "web_search",
-        "Search the web via a self-hosted SearXNG, with a Tavily fallback when it "
-        "returns nothing. Returns a numbered list of title / URL / snippet. Use "
-        "for current or external information not in the working tree.",
+        "Search web via self-hosted SearXNG, Tavily fallback when empty. Returns "
+        "numbered list of title / URL / snippet. Use for current or external info "
+        "not in working tree.",
         nlohmann::json{
             {"type", "object"},
             {"properties",
-             {{"query", {{"type", "string"}, {"description", "the web search query"}}}}},
+             {{"query", {{"type", "string"}, {"description", "web search query"}}}}},
             {"required", nlohmann::json::array({"query"})}}};
 
     auto run = [searxng, tavily, ddg, quota, max_results](
@@ -448,16 +450,16 @@ Tool web_search_tool(SearchConfig cfg) {
 Tool web_fetch_tool(FetchConfig cfg) {
     ToolSpec spec{
         "web_fetch",
-        "Fetch a single http(s) URL and return its response body. The body is "
-        "truncated when large. Use to read a specific page found via web_search.",
+        "Fetch one http(s) URL, return response body. Body truncated when large. "
+        "Use to read specific page found via web_search.",
         nlohmann::json{
             {"type", "object"},
             {"properties",
-             {{"url", {{"type", "string"}, {"description", "the http(s) URL to fetch"}}},
+             {{"url", {{"type", "string"}, {"description", "http(s) URL to fetch"}}},
               {"max_bytes",
                {{"type", "integer"},
                 {"description",
-                 "optional cap on returned body bytes; clamped to the tool ceiling"}}}}},
+                 "cap on returned body bytes; clamped to tool ceiling"}}}}},
             {"required", nlohmann::json::array({"url"})}}};
 
     auto run = [cfg](const nlohmann::json& args) -> std::expected<std::string, Error> {
@@ -492,4 +494,4 @@ Tool web_fetch_tool(FetchConfig cfg) {
     return Tool{.spec = std::move(spec), .run = std::move(run)};
 }
 
-}  // namespace flagent
+}  // namespace moocode

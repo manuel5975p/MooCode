@@ -4,7 +4,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 // /effort: levels set effort + reasoning_hint; none/off disables thinking;
 // junk yields the usage error and applies nothing.

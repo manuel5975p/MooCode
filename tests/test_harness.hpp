@@ -1,10 +1,10 @@
-#ifndef FLAGENT_TEST_HARNESS_HPP
-#define FLAGENT_TEST_HARNESS_HPP
+#ifndef MOOCODE_TEST_HARNESS_HPP
+#define MOOCODE_TEST_HARNESS_HPP
 
 // Tiny zero-dependency test harness. A test file does:
 //   #include "test_harness.hpp"
 //   TEST(name) { CHECK(cond); CHECK_EQ(a, b); }
-// and links against test_main.cpp which calls flagent::test::run_all().
+// and links against test_main.cpp which calls moocode::test::run_all().
 
 #include <cstdio>
 #include <functional>
@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace flagent::test {
+namespace moocode::test {
 
 struct Case {
     std::string name;
@@ -60,22 +60,22 @@ inline int run_all() {
     return failed_cases == 0 ? 0 : 1;
 }
 
-}  // namespace flagent::test
+}  // namespace moocode::test
 
 // --- Macros -----------------------------------------------------------------
-#define FLAGENT_CAT_(a, b) a##b
-#define FLAGENT_CAT(a, b) FLAGENT_CAT_(a, b)
+#define MOOCODE_CAT_(a, b) a##b
+#define MOOCODE_CAT(a, b) MOOCODE_CAT_(a, b)
 
 #define TEST(name)                                                            \
-    static void FLAGENT_CAT(flagent_test_, __LINE__)();                       \
-    static ::flagent::test::Registrar FLAGENT_CAT(flagent_reg_, __LINE__){    \
-        name, &FLAGENT_CAT(flagent_test_, __LINE__)};                         \
-    static void FLAGENT_CAT(flagent_test_, __LINE__)()
+    static void MOOCODE_CAT(moocode_test_, __LINE__)();                       \
+    static ::moocode::test::Registrar MOOCODE_CAT(moocode_reg_, __LINE__){    \
+        name, &MOOCODE_CAT(moocode_test_, __LINE__)};                         \
+    static void MOOCODE_CAT(moocode_test_, __LINE__)()
 
 #define CHECK(cond)                                                           \
     do {                                                                      \
         if (!(cond))                                                          \
-            ::flagent::test::report_failure(__FILE__, __LINE__, #cond);       \
+            ::moocode::test::report_failure(__FILE__, __LINE__, #cond);       \
     } while (0)
 
 #define CHECK_EQ(a, b)                                                        \
@@ -85,8 +85,8 @@ inline int run_all() {
         if (!(_a == _b)) {                                                    \
             std::ostringstream _os;                                           \
             _os << #a " == " #b;                                              \
-            ::flagent::test::report_failure(__FILE__, __LINE__, _os.str());   \
+            ::moocode::test::report_failure(__FILE__, __LINE__, _os.str());   \
         }                                                                     \
     } while (0)
 
-#endif  // FLAGENT_TEST_HARNESS_HPP
+#endif  // MOOCODE_TEST_HARNESS_HPP

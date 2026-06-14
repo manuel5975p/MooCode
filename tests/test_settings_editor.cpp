@@ -6,7 +6,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 // --- field count and rebuild -------------------------------------------------
 

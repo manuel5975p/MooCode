@@ -6,9 +6,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include "agent/gitea_internal.hpp"
+#include "agent/http_detail.hpp"
+
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 using nlohmann::json;
 
 namespace {
@@ -456,7 +459,7 @@ TEST("url arg: required when no default instance is configured") {
 
     auto missing = t->run({{"owner", "me"}, {"repo", "t"}, {"number", 1}});
     CHECK(!missing.has_value());
-    CHECK(missing.error().msg.find("FLAGENT_GITEA_URL") != std::string::npos);
+    CHECK(missing.error().msg.find("MOOCODE_GITEA_URL") != std::string::npos);
 
     auto bad = t->run({{"url", "ftp://x"}, {"owner", "me"}, {"repo", "t"}, {"number", 1}});
     CHECK(!bad.has_value());
@@ -467,7 +470,7 @@ TEST("url arg: required when no default instance is configured") {
     CHECK_EQ(*ok, "diff x\n");
 }
 
-// --- basic auth (FLAGENT_GITEA_AUTH) --------------------------------------------
+// --- basic auth (MOOCODE_GITEA_AUTH) --------------------------------------------
 
 TEST("parse_gitea_auth: .env keys, quotes, comments, CRLF") {
     auto a = parse_gitea_auth("GITEA_USER=manuel\nGITEA_PASS=s3cret\n");

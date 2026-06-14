@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -184,4 +184,4 @@ std::string sanitize_tui_text(std::string_view s) {
     return out;
 }
 
-}  // namespace flagent
+}  // namespace moocode

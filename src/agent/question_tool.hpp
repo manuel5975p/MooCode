@@ -1,5 +1,5 @@
-#ifndef FLAGENT_QUESTION_TOOL_HPP
-#define FLAGENT_QUESTION_TOOL_HPP
+#ifndef MOOCODE_QUESTION_TOOL_HPP
+#define MOOCODE_QUESTION_TOOL_HPP
 
 // The ask_user tool: lets the LLM pause mid-turn and ask the user a "pick one"
 // question. A QuestionGate synchronisation primitive mirrors ApprovalGate: the
@@ -15,7 +15,7 @@
 
 #include "agent/tools.hpp"
 
-namespace flagent {
+namespace moocode {
 
 // Worker↔UI handshake for a single question. The worker calls request() and
 // blocks; the UI polls pending() / pending_question(), then calls answer() or
@@ -66,6 +66,6 @@ private:
 // (or stdin) instead of blocking on the gate.
 Tool ask_user_tool(QuestionGate* gate);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_QUESTION_TOOL_HPP
+#endif  // MOOCODE_QUESTION_TOOL_HPP

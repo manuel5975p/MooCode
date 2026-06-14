@@ -1,5 +1,5 @@
-#ifndef FLAGENT_STRUTIL_HPP
-#define FLAGENT_STRUTIL_HPP
+#ifndef MOOCODE_STRUTIL_HPP
+#define MOOCODE_STRUTIL_HPP
 
 // Small, dependency-free string helpers shared across layers. Header-only: no
 // I/O, no project deps beyond the STL, so any target may include it freely.
@@ -11,7 +11,7 @@
 #include <string_view>
 #include <utility>
 
-namespace flagent {
+namespace moocode {
 
 // Lowercase copy, ASCII-locale, safe for any char value. Total.
 inline std::string to_lower(std::string_view s) {
@@ -117,6 +117,15 @@ inline std::string default_trunc_marker(std::size_t shown, std::size_t full) {
            std::to_string(full) + " bytes]";
 }
 
-}  // namespace flagent
+// Replace every occurrence of `key` in `s` with `val`. post: no `key` remains
+// unless it reappears inside a substituted `val`.
+inline void substitute(std::string& s, std::string_view key, std::string_view val) {
+    for (std::size_t pos = 0; (pos = s.find(key, pos)) != std::string::npos;) {
+        s.replace(pos, key.size(), val);
+        pos += val.size();
+    }
+}
 
-#endif  // FLAGENT_STRUTIL_HPP
+}  // namespace moocode
+
+#endif  // MOOCODE_STRUTIL_HPP

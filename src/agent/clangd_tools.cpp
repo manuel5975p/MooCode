@@ -1,5 +1,6 @@
 #include "agent/clangd_tools.hpp"
 
+#include "agent/builtin_tools.hpp"  // ToolOptions
 #include "agent/fsutil.hpp"    // resolve_in_root, slurp
 #include "agent/json_util.hpp"  // get_string, get_int
 #include "agent/strutil.hpp"   // truncate, to_lower, trim_sv, default_trunc_marker
@@ -14,7 +15,7 @@
 
 namespace fs = std::filesystem;
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -268,10 +269,10 @@ std::expected<Located, Error> resolve_pos(ClangdSession& s, const nlohmann::json
 
 // JSON-schema fragment shared by every position-addressed tool.
 const char* kPosProps =
-    R"SC("path":{"type":"string","description":"file path, relative to the project root"},
-       "line":{"type":"integer","description":"1-based line number containing the symbol"},
-       "symbol":{"type":"string","description":"the exact identifier text to locate on that line (e.g. taken from grep/read_file output)"},
-       "occurrence":{"type":"integer","description":"which match to use if the identifier appears more than once on the line (1-based, default 1)"})SC";
+    R"SC("path":{"type":"string","description":"file path, relative to project root"},
+       "line":{"type":"integer","description":"1-based line with the symbol"},
+       "symbol":{"type":"string","description":"exact identifier text to find on that line (e.g. from grep/read_file output)"},
+       "occurrence":{"type":"integer","description":"which match if identifier repeats on line (1-based, default 1)"})SC";
 
 nlohmann::json pos_schema(const std::string& extra_props = {}) {
     std::string props = std::string(kPosProps);
@@ -374,12 +375,12 @@ Result apply_workspace_edit(const nlohmann::json& edit, ClangdSession& s,
 Tool find_references_tool(std::shared_ptr<ClangdSession> session) {
     ToolSpec spec{
         "find_references",
-        "Find all references to a C/C++ symbol via clangd. Give the file `path`, "
-        "the 1-based `line`, and the `symbol` identifier on that line. Returns one "
-        "`path:line:col: <source>` per reference. Most accurate with a "
+        "Find all references to C/C++ symbol via clangd. Give file `path`, "
+        "1-based `line`, `symbol` identifier on that line. Returns one "
+        "`path:line:col: <source>` per reference. Most accurate with "
         "compile_commands.json present.",
         pos_schema(
-            R"SC("include_declaration":{"type":"boolean","description":"also include the declaration (default true)"})SC")};
+            R"SC("include_declaration":{"type":"boolean","description":"also include declaration (default true)"})SC")};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
@@ -395,8 +396,8 @@ Tool find_references_tool(std::shared_ptr<ClangdSession> session) {
 
 Tool go_to_definition_tool(std::shared_ptr<ClangdSession> session) {
     ToolSpec spec{"go_to_definition",
-                  "Jump to where a C/C++ symbol is defined via clangd. Args: `path`, "
-                  "1-based `line`, `symbol`. Returns the defining `path:line:col`.",
+                  "Jump to where C/C++ symbol is defined via clangd. Args: `path`, "
+                  "1-based `line`, `symbol`. Returns defining `path:line:col`.",
                   pos_schema()};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
         auto loc = resolve_pos(*session, a);
@@ -411,8 +412,8 @@ Tool go_to_definition_tool(std::shared_ptr<ClangdSession> session) {
 
 Tool go_to_implementation_tool(std::shared_ptr<ClangdSession> session) {
     ToolSpec spec{"go_to_implementation",
-                  "Find implementations/overrides of a C/C++ symbol (e.g. a virtual "
-                  "method or an abstract interface) via clangd. Args: `path`, 1-based "
+                  "Find implementations/overrides of C/C++ symbol (e.g. virtual "
+                  "method or abstract interface) via clangd. Args: `path`, 1-based "
                   "`line`, `symbol`. Returns implementing `path:line:col` locations.",
                   pos_schema()};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
@@ -428,7 +429,7 @@ Tool go_to_implementation_tool(std::shared_ptr<ClangdSession> session) {
 
 Tool hover_tool(std::shared_ptr<ClangdSession> session) {
     ToolSpec spec{"hover",
-                  "Show the type, signature, and documentation of a C/C++ symbol via "
+                  "Show type, signature, docs of C/C++ symbol via "
                   "clangd (textDocument/hover). Args: `path`, 1-based `line`, `symbol`.",
                   pos_schema()};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
@@ -445,14 +446,14 @@ Tool hover_tool(std::shared_ptr<ClangdSession> session) {
 Tool list_symbols_tool(std::shared_ptr<ClangdSession> session) {
     ToolSpec spec{
         "list_symbols",
-        "List C/C++ symbols via clangd. Pass `path` for the symbols defined in one "
-        "file (an indented kind/name/line tree), OR `query` to search symbols across "
-        "the whole project. Provide exactly one.",
+        "List C/C++ symbols via clangd. Pass `path` for symbols defined in one "
+        "file (indented kind/name/line tree), OR `query` to search symbols across "
+        "whole project. Provide exactly one.",
         nlohmann::json::parse(R"SC({
             "type":"object",
             "properties":{
-              "path":{"type":"string","description":"a file to list the symbols of"},
-              "query":{"type":"string","description":"a project-wide symbol-name search (empty string lists top-level symbols)"}}})SC")};
+              "path":{"type":"string","description":"file to list symbols of"},
+              "query":{"type":"string","description":"project-wide symbol-name search (empty string lists top-level symbols)"}}})SC")};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
         bool has_path = a.contains("path") && a["path"].is_string() &&
                         !a["path"].get<std::string>().empty();
@@ -490,8 +491,8 @@ Tool list_symbols_tool(std::shared_ptr<ClangdSession> session) {
 Tool call_hierarchy_tool(std::shared_ptr<ClangdSession> session) {
     ToolSpec spec{
         "call_hierarchy",
-        "Show callers or callees of a C/C++ function via clangd. Args: `path`, 1-based "
-        "`line`, `symbol`, and `direction` ('callers' for who calls it, 'callees' for "
+        "Show callers or callees of C/C++ function via clangd. Args: `path`, 1-based "
+        "`line`, `symbol`, `direction` ('callers' for who calls it, 'callees' for "
         "what it calls; default callers).",
         pos_schema(
             R"SC("direction":{"type":"string","enum":["callers","callees"],"description":"'callers' (incoming) or 'callees' (outgoing); default callers"})SC")};
@@ -526,12 +527,12 @@ Tool call_hierarchy_tool(std::shared_ptr<ClangdSession> session) {
 Tool rename_tool(std::shared_ptr<ClangdSession> session, ToolOptions opts) {
     ToolSpec spec{
         "rename",
-        "Rename a C/C++ symbol project-wide via clangd and apply the edits to the "
-        "working tree (shown as diffs). Args: `path`, 1-based `line`, `symbol`, and "
-        "`new_name`. Most reliable once clangd has finished indexing; set "
-        "CLANGD_INDEX_WAIT_MS to wait for the index first.",
+        "Rename C/C++ symbol project-wide via clangd, apply edits to "
+        "working tree (shown as diffs). Args: `path`, 1-based `line`, `symbol`, "
+        "`new_name`. Most reliable once clangd finished indexing; set "
+        "CLANGD_INDEX_WAIT_MS to wait for index first.",
         pos_schema(
-            R"SC("new_name":{"type":"string","description":"the new identifier name"})SC")};
+            R"SC("new_name":{"type":"string","description":"new identifier name"})SC")};
     // required becomes [path,line,symbol]; new_name is enforced below.
     return Tool{.spec = std::move(spec),
                 .run = [session, opts](const nlohmann::json& a) -> Result {
@@ -572,4 +573,4 @@ void register_clangd_tools(ToolRegistry& reg, std::shared_ptr<lsp::ClangdSession
     reg.add(rename_tool(session, std::move(opts)));
 }
 
-}  // namespace flagent
+}  // namespace moocode

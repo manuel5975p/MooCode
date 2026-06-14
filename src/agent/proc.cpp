@@ -15,7 +15,7 @@
 
 namespace fs = std::filesystem;
 
-namespace flagent {
+namespace moocode {
 
 std::string select_lines(const std::string& text, std::int64_t offset,
                          std::int64_t limit) {
@@ -167,4 +167,4 @@ std::expected<std::string, Error> run_process(
     return out;
 }
 
-}  // namespace flagent
+}  // namespace moocode

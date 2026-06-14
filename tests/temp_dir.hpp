@@ -1,5 +1,5 @@
-#ifndef FLAGENT_TEMP_DIR_HPP
-#define FLAGENT_TEMP_DIR_HPP
+#ifndef MOOCODE_TEMP_DIR_HPP
+#define MOOCODE_TEMP_DIR_HPP
 
 // RAII unique temporary directory for filesystem tests; removed on destruction.
 
@@ -9,13 +9,13 @@
 #include <string>
 #include <unistd.h>
 
-namespace flagent::test {
+namespace moocode::test {
 
 class TempDir {
 public:
     TempDir() {
         std::string tmpl =
-            (std::filesystem::temp_directory_path() / "flagent_test_XXXXXX").string();
+            (std::filesystem::temp_directory_path() / "moocode_test_XXXXXX").string();
         std::string buf = tmpl;
         int fd = ::mkstemp(buf.data());
         if (fd != -1) {
@@ -51,6 +51,6 @@ private:
     std::filesystem::path path_;
 };
 
-}  // namespace flagent::test
+}  // namespace moocode::test
 
-#endif  // FLAGENT_TEMP_DIR_HPP
+#endif  // MOOCODE_TEMP_DIR_HPP

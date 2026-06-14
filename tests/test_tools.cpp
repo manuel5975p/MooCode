@@ -2,7 +2,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 Tool echo_tool(std::string name) {

@@ -5,7 +5,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 ToolCall call(std::string name) { return ToolCall{.id = "id", .name = std::move(name), .arguments_json = "{}"}; }

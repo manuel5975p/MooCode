@@ -1,5 +1,5 @@
-#ifndef FLAGENT_PROC_HPP
-#define FLAGENT_PROC_HPP
+#ifndef MOOCODE_PROC_HPP
+#define MOOCODE_PROC_HPP
 
 // One process-spawning primitive shared by run_bash and the git tools. Forks
 // argv[0] (PATH-resolved via execvp) in its own process group, sets cwd, merges
@@ -16,7 +16,7 @@
 
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 // Default capture ceiling: 1 MiB, then a truncation marker is appended.
 inline constexpr std::size_t kProcOutputCap = 1u << 20;
@@ -35,6 +35,6 @@ std::expected<std::string, Error> run_process(
 std::string select_lines(const std::string& text, std::int64_t offset,
                          std::int64_t limit);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_PROC_HPP
+#endif  // MOOCODE_PROC_HPP

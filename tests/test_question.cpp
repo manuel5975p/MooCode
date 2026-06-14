@@ -5,7 +5,7 @@
 #include "agent/question_tool.hpp"
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 // --- QuestionGate synchronization -----------------------------------------
 

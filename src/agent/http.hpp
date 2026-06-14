@@ -1,5 +1,5 @@
-#ifndef FLAGENT_HTTP_HPP
-#define FLAGENT_HTTP_HPP
+#ifndef MOOCODE_HTTP_HPP
+#define MOOCODE_HTTP_HPP
 
 // Minimal blocking HTTP client over libcurl. Only what the agent needs: a JSON
 // POST. A returned Response means the round-trip completed (inspect `status` for
@@ -15,7 +15,7 @@
 
 #include "agent/types.hpp"
 
-namespace flagent::http {
+namespace moocode::http {
 
 struct Response {
     long status = 0;     // HTTP status code, e.g. 200, 404, 500
@@ -40,13 +40,10 @@ std::expected<Response, Error> get(std::string_view url,
                                    const std::vector<std::string>& headers = {},
                                    long timeout_secs = 60);
 
-// Percent-encode `s` for use as a URL query-component value (RFC 3986
-// unreserved bytes pass through; everything else becomes %XX). Total.
-std::string url_encode(std::string_view s);
-
-// Percent-decode a URL-encoded string (RFC 3986). %XX hex sequences are
-// decoded; malformed sequences (truncated, non-hex) are left as-is. Total.
-std::string url_decode(std::string_view s);
+// Percent-encode/decode helpers are in http_detail.hpp — include that header
+// if you need to unit-test them directly. The production call site (gitea.cpp
+// constructing URL paths) uses them via http_detail.hpp included from http.cpp,
+// so the symbols are still linkable.
 
 // POST `body` and hand the response body to `on_chunk` incrementally as it
 // arrives, for streaming (Server-Sent Events) responses. `on_chunk` is invoked
@@ -69,6 +66,6 @@ std::expected<long, Error> post_json_stream(
 void global_init();
 void global_cleanup();
 
-}  // namespace flagent::http
+}  // namespace moocode::http
 
-#endif  // FLAGENT_HTTP_HPP
+#endif  // MOOCODE_HTTP_HPP

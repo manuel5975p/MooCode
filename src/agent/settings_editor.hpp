@@ -1,5 +1,5 @@
-#ifndef FLAGENT_SETTINGS_EDITOR_HPP
-#define FLAGENT_SETTINGS_EDITOR_HPP
+#ifndef MOOCODE_SETTINGS_EDITOR_HPP
+#define MOOCODE_SETTINGS_EDITOR_HPP
 
 // Screen-free settings-editor form logic: a pure data + transition layer under
 // the /settings slash command. Zero FTXUI, zero mutex, zero I/O — the TUI
@@ -16,7 +16,7 @@
 
 #include "agent/persist.hpp"  // Settings, Profile
 
-namespace flagent {
+namespace moocode {
 
 // One field in the editor form.
 struct FieldDef {
@@ -213,6 +213,6 @@ SettingsForm settings_form_build(const Settings& current);
 // Returns Saved when dirty, Cancelled when clean.  Resets active / editing.
 FormAction settings_form_close(SettingsForm& form);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_SETTINGS_EDITOR_HPP
+#endif  // MOOCODE_SETTINGS_EDITOR_HPP

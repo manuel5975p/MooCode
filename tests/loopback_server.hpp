@@ -1,5 +1,5 @@
-#ifndef FLAGENT_LOOPBACK_SERVER_HPP
-#define FLAGENT_LOOPBACK_SERVER_HPP
+#ifndef MOOCODE_LOOPBACK_SERVER_HPP
+#define MOOCODE_LOOPBACK_SERVER_HPP
 
 // A throwaway single-connection-at-a-time HTTP/1.1 server bound to 127.0.0.1 on
 // an ephemeral port, for exercising the real libcurl client without a network.
@@ -15,7 +15,7 @@
 #include <string>
 #include <thread>
 
-namespace flagent::test {
+namespace moocode::test {
 
 class LoopbackServer {
 public:
@@ -121,6 +121,6 @@ private:
     std::string last_body_;
 };
 
-}  // namespace flagent::test
+}  // namespace moocode::test
 
-#endif  // FLAGENT_LOOPBACK_SERVER_HPP
+#endif  // MOOCODE_LOOPBACK_SERVER_HPP

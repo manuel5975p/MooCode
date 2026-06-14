@@ -1,5 +1,5 @@
-#ifndef FLAGENT_IMAGE_CHIP_HPP
-#define FLAGENT_IMAGE_CHIP_HPP
+#ifndef MOOCODE_IMAGE_CHIP_HPP
+#define MOOCODE_IMAGE_CHIP_HPP
 
 // Pasted-image "chip" helpers for the TUI prompt line. A pasted clipboard image
 // is represented in the input buffer by a short, pure-ASCII placeholder token
@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace flagent {
+namespace moocode {
 
 // The chip text for image id `id`. pre: id >= 0. post: pure ASCII `[img#<id>]`.
 inline std::string image_chip(int id) {
@@ -102,6 +102,6 @@ inline std::string strip_chips(std::string_view text) {
     return out;
 }
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_IMAGE_CHIP_HPP
+#endif  // MOOCODE_IMAGE_CHIP_HPP

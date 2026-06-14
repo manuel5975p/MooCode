@@ -6,7 +6,7 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 
@@ -78,13 +78,13 @@ TEST("compact: single user turn with long tool loop shrinks") {
     auto conv = single_turn_loop(/*steps=*/10, /*bulk_chars=*/2000);
     agent.set_history(conv);
 
-    const int before = Agent::estimated_tokens(conv);
+    const int before = estimated_tokens(conv);
     auto out = agent.compact();
     CHECK(out.has_value());
     if (!out) return;
 
     CHECK_EQ(p.calls, 1);  // the summarise call actually happened
-    const int after = Agent::estimated_tokens(*out);
+    const int after = estimated_tokens(*out);
     CHECK(after < before / 2);  // a real, large reduction
 
     // System preserved at the front, summary folded in right after it.
@@ -185,10 +185,10 @@ TEST("compact: kept tail respects the token budget") {
     // Sum the verbatim tail (everything after system + summary).
     std::size_t start = (out->front().role() == Role::System) ? 2 : 1;
     Conversation tail(out->begin() + static_cast<long>(start), out->end());
-    const int tail_tok = Agent::estimated_tokens(tail);
+    const int tail_tok = estimated_tokens(tail);
     CHECK(tail_tok >= 100);                 // at least the most recent message
     CHECK(tail_tok <= 500 + 100);           // budget + one-message slack
-    CHECK(Agent::estimated_tokens(*out) < Agent::estimated_tokens(conv) / 2);
+    CHECK(estimated_tokens(*out) < estimated_tokens(conv) / 2);
 }
 
 // Too short to bother: compaction is a no-op and makes no provider call.

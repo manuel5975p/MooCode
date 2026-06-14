@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace flagent {
+namespace moocode {
 
 TuiWorker::TuiWorker(Deps d) : d_(std::move(d)) {
     t_ = std::thread([this] { loop(); });
@@ -49,4 +49,4 @@ void TuiWorker::loop() {
     }
 }
 
-}  // namespace flagent
+}  // namespace moocode

@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string_view>
 
+#include "agent/fsutil.hpp"
 #include "agent/strutil.hpp"
 
 // The project bans exceptions, so toml++ must use its error-returning API. This
@@ -15,14 +16,38 @@
 
 namespace fs = std::filesystem;
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
-// Slurp a whole file; empty string if it cannot be read.
-std::string slurp(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    return std::string(std::istreambuf_iterator<char>(f), {});
+// Legacy heuristic retained for back-compat: conversations written before
+// `tool_failed` was a typed field had no typed bit, so we infer failure from
+// the "ERROR: " prefix. Not for new callers.
+inline bool is_tool_error(std::string_view s) { return s.rfind("ERROR: ", 0) == 0; }
+
+// Build a Message field-by-field from deserialized TOML data. The public API
+// forces construction through role-tagged factories, but the persist loader
+// needs to build Messages from arbitrary loaded fields. This free function
+// lives here, not in types.hpp, because it is a persistence implementation
+// detail — no other code should bypass the role-tagged constructors.
+Message message_from_fields(Role role, std::string content,
+                            std::vector<ToolCall> tool_calls,
+                            std::string tool_call_id,
+                            std::vector<ContentPart> parts,
+                            bool tool_failed, std::string reasoning) {
+    switch (role) {
+    case Role::System:
+        return Message::system(std::move(content));
+    case Role::User:
+        return Message::user(std::move(content), std::move(parts));
+    case Role::Assistant:
+        return Message::assistant(std::move(content), std::move(tool_calls),
+                                  std::move(reasoning));
+    case Role::Tool:
+        return Message::tool(std::move(tool_call_id), std::move(content),
+                             tool_failed);
+    }
+    return Message::user(std::move(content));
 }
 
 // Map a role string to the enum; unknown roles default to User (defensive).
@@ -44,11 +69,17 @@ std::string iso_utc(std::time_t t) {
 
 }  // namespace
 
-std::string flagent_home() {
-    std::string fh = env_or("FLAGENT_HOME", "");
+std::optional<std::string> toml_check_syntax(std::string_view text) {
+    toml::parse_result res = toml::parse(text);
+    if (!res) return std::string(res.error().description());
+    return std::nullopt;
+}
+
+std::string moocode_home() {
+    std::string fh = env_or("MOOCODE_HOME", "");
     if (!fh.empty()) return fh;
     std::string home = env_or("HOME", "");
-    if (!home.empty()) return home + "/.flagent";
+    if (!home.empty()) return home + "/.moo";
     return {};  // no home => persistence disabled
 }
 
@@ -357,10 +388,10 @@ Conversation messages_from_table(const toml::table& doc) {
                 tool_calls.push_back(std::move(tc));
             }
         }
-        conv.push_back(Message::from_fields(role, std::move(content),
-                                            std::move(tool_calls),
-                                            std::move(tool_call_id), {},
-                                            tool_failed, std::move(reasoning)));
+        conv.push_back(message_from_fields(role, std::move(content),
+                                           std::move(tool_calls),
+                                           std::move(tool_call_id), {},
+                                           tool_failed, std::move(reasoning)));
     }
     return conv;
 }
@@ -435,4 +466,4 @@ std::vector<ConvSummary> list_conversations(const std::string& dir,
     return out;
 }
 
-}  // namespace flagent
+}  // namespace moocode

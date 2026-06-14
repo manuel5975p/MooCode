@@ -5,7 +5,7 @@
 #include "loopback_server.hpp"
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 namespace {
 GeminiConfig cfg() {

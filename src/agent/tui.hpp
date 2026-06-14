@@ -1,5 +1,5 @@
-#ifndef FLAGENT_TUI_HPP
-#define FLAGENT_TUI_HPP
+#ifndef MOOCODE_TUI_HPP
+#define MOOCODE_TUI_HPP
 
 // Full-screen two-pane terminal UI for the interactive session, built on FTXUI.
 // The view/controller live in tui.cpp (the only place that includes FTXUI);
@@ -17,15 +17,21 @@
 #include <string_view>
 #include <vector>
 
-#include "agent/agent.hpp"
-#include "agent/builtin_tools.hpp"  // FileChange, FileChangeFn
-#include "agent/diff.hpp"           // DiffLine
-#include "agent/permissions.hpp"    // Approval, Permissions
-#include "agent/question_tool.hpp"  // QuestionGate
-#include "agent/subagent_tool.hpp"  // SubagentActivityFn, SubagentTextFn
-#include "agent/types.hpp"          // ToolCall, Message
+#include "agent/diff.hpp"            // DiffLine (needed by value in ChatEntry::diff)
+#include "agent/permissions.hpp"     // Approval (used by value in ApprovalGate)
+#include "agent/subagent_types.hpp"  // SubagentActivityFn, SubagentTextFn, SubagentActivityStatus
+#include "agent/types.hpp"           // ToolCall, Message (needed by value)
 
-namespace flagent {
+// Forward declarations — these types appear only as references/pointers
+// in tui.hpp; the full definitions are needed only in tui.cpp.
+namespace moocode {
+class Agent;
+struct FileChange;
+class QuestionGate;
+class Permissions;
+}  // namespace moocode
+
+namespace moocode {
 
 // Static text shown in the status bar, plus the home dir used for auto-save and
 // the resume/continue/rewind pickers (empty => persistence disabled).
@@ -34,29 +40,13 @@ struct TuiInfo {
     std::string base_url;
     std::string cwd;
     int context_window = 0;  // 0 => token count only; else "used / window"
-    std::string home;        // ~/.flagent (or $FLAGENT_HOME); "" disables persistence
+    std::string home;        // ~/.moo (or $MOOCODE_HOME); "" disables persistence
     std::string provider;    // backend wire format label ("openai"/"anthropic")
     std::string notice;      // optional one-time info line shown in the chat log at startup
     std::string api_key;     // current session key (for /provider save); never rendered
     std::string profile;     // active profile name; "" => none. Never holds the key.
     bool debug = false;      // --debug: show incoming mouse events in the status bar
 };
-
-// Syntax-highlight colour scheme for fenced code blocks in the chat pane. The
-// id is held in the render model and persisted by name (settings.toml); the
-// id→FTXUI-colour mapping lives in tui.cpp. "None" disables highlighting so
-// code renders in the terminal's default foreground.
-enum class SyntaxTheme { None, Default, Mono, Vivid };
-
-// Canonical lowercase name of a theme ("default", "mono", …); round-trips with
-// syntax_theme_from_name. Never empty. Pure (no FTXUI), so unit-testable.
-std::string_view syntax_theme_name(SyntaxTheme t);
-
-// Parse a theme name (case-insensitive). nullopt for an unknown name.
-std::optional<SyntaxTheme> syntax_theme_from_name(std::string_view name);
-
-// All theme names in display order, for /theme listing and autocomplete.
-std::vector<std::string> syntax_theme_names();
 
 // Stable identity of one navigable node. Chat nodes are identified by entry
 // index (the chat log is append-only; load() resets selection). Activity nodes
@@ -95,11 +85,14 @@ RowClick classify_row_click(const NodeKey& row, bool expander,
 // except activity status updates and the reasoning-collapse flag.
 class TuiState {
 public:
-    enum class ChatKind { User, Assistant, Reasoning, ErrorLine, Diff, Info };
+    enum class ChatKind { User, Assistant, Reasoning, ErrorLine, Diff, Info, ToolUse };
     struct ChatEntry {
         ChatKind kind;
         std::string text;            // Diff: the file path (header line);
-                                     // Info: a single-line annotation
+                                     // Info: a single-line annotation;
+                                     // ToolUse: the tool_call_id — the matching
+                                     // Activity (looked up by id) is the source
+                                     // of truth for name/args/status/output.
         std::vector<DiffLine> diff;  // populated only for ChatKind::Diff
         std::size_t word_seed = 0;   // Reasoning: stable busy-word selector
     };
@@ -300,6 +293,11 @@ std::string human_tokens(int n);
 // else "2m03s". pre: ms >= 0.
 std::string human_duration(std::chrono::milliseconds ms);
 
+// The last `n` lines of `text`, trailing blank lines dropped, joined with '\n'.
+// Empty when `text` is empty or all-blank. Used for the gray output preview
+// under an inline tool-use row in the chat pane. Pure, so it is unit-testable.
+std::string last_lines(std::string_view text, std::size_t n);
+
 // One-line tree-row summary of a tool call's JSON arguments: the value of the
 // most informative key ("path", "cmd", "url", …), else the raw args. Sanitized
 // and capped so it always renders as a single non-wrapping row.
@@ -348,11 +346,11 @@ private:
 // log (the tool closures call through *sink). Returns a process exit code.
 // pre: stdout is a tty.
 int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
-            std::shared_ptr<FileChangeFn> sink = {},
+            std::shared_ptr<std::function<void(const FileChange&)>> sink = {},
             QuestionGate* question_gate_ptr = {},
             std::shared_ptr<SubagentActivityFn> on_subagent_activity = {},
             std::shared_ptr<SubagentTextFn> on_subagent_text = {});
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_TUI_HPP
+#endif  // MOOCODE_TUI_HPP

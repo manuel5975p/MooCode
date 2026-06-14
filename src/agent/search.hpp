@@ -1,5 +1,5 @@
-#ifndef FLAGENT_SEARCH_HPP
-#define FLAGENT_SEARCH_HPP
+#ifndef MOOCODE_SEARCH_HPP
+#define MOOCODE_SEARCH_HPP
 
 // Web-search backends for the `web_search` tool: a self-hosted SearXNG primary
 // with an optional Tavily fallback, behind one SearchBackend interface. A Router
@@ -15,7 +15,7 @@
 
 #include "agent/tools.hpp"
 
-namespace flagent {
+namespace moocode {
 
 // --- tool factory -----------------------------------------------------------
 
@@ -43,6 +43,6 @@ struct FetchConfig {
 // FetchConfig::max_bytes, whichever is smaller. Rejects non-http(s) URLs.
 Tool web_fetch_tool(FetchConfig cfg = {});
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_SEARCH_HPP
+#endif  // MOOCODE_SEARCH_HPP

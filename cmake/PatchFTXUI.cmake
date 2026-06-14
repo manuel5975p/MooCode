@@ -49,7 +49,7 @@ ftxui_patch(src/ftxui/screen/string.cpp
 
   return Bisearch(ucs, g_full_width_characters);
 }]=]
-  [=[// flagent patch (cmake/PatchFTXUI.cmake): Unicode 14-16 additions missing
+  [=[// moocode patch (cmake/PatchFTXUI.cmake): Unicode 14-16 additions missing
 // from the Unicode 13 table above, diffed against Unicode 16 EastAsianWidth
 // W/F. Modern terminals render these two cells wide; under-counting them
 // desyncs FTXUI's in-place frame overwrites.
@@ -77,7 +77,7 @@ bool IsFullWidth(uint32_t ucs) {
 
 # --- 2. half-glyph clip fix ---------------------------------------------------
 ftxui_patch(src/ftxui/dom/text.cpp
-  "flagent patch"
+  "moocode patch"
   [=[    for (const auto& cell : Utf8ToGlyphs(text_)) {
       if (x > box_.x_max) {
         break;
@@ -95,7 +95,7 @@ ftxui_patch(src/ftxui/dom/text.cpp
       if (cell == "\n") {
         continue;
       }
-      // flagent patch (cmake/PatchFTXUI.cmake): a fullwidth glyph reserves
+      // moocode patch (cmake/PatchFTXUI.cmake): a fullwidth glyph reserves
       // the next cell (the empty string Utf8ToGlyphs appends). If that
       // reserved cell falls outside the box, drawing the glyph would bleed
       // into the neighbouring element's pixel and make Screen::ToString skip
@@ -114,7 +114,7 @@ ftxui_patch(src/ftxui/component/screen_interactive.cpp
   ResetCursorPosition();
   std::cout << ResetPosition(/*clear=*/resized);]=]
   [=[  const bool resized = (dimx != dimx_) || (dimy != dimy_);
-  // flagent patch (cmake/PatchFTXUI.cmake): begin synchronized update (DEC
+  // moocode patch (cmake/PatchFTXUI.cmake): begin synchronized update (DEC
   // private mode 2026); supporting terminals present the frame atomically.
   std::cout << "\033[?2026h";
   ResetCursorPosition();
@@ -125,6 +125,6 @@ ftxui_patch(src/ftxui/component/screen_interactive.cpp
   [=[  std::cout << ToString() << set_cursor_position;
   Flush();]=]
   [=[  std::cout << ToString() << set_cursor_position;
-  std::cout << "\033[?2026l";  // flagent patch: end synchronized update
+  std::cout << "\033[?2026l";  // moocode patch: end synchronized update
   Flush();]=]
 )

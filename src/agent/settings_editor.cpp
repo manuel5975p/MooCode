@@ -9,7 +9,9 @@
 
 #include "agent/strutil.hpp"  // to_lower
 
-namespace flagent {
+#include "agent/persist.hpp"  // toml_check_syntax
+
+namespace moocode {
 
 namespace {
 
@@ -323,27 +325,9 @@ void SettingsForm::detect_malformed(const std::string& home) {
     if (!f) return;
     std::string body(std::istreambuf_iterator<char>(f), {});
     if (body.empty()) return;
-    // Use toml++ to try parsing. On failure, mark it.
-    // (We can't use toml::parse here from this TU without toml.hpp, so we use a
-    // heuristic: check for balanced brackets, unclosed strings, etc.  Full toml
-    // parse is done in the TUI glue or we include toml here.  Since we want
-    // zero dep, we do a light check.)
-    // Actually, we can include toml.hpp here since it's already in persist.cpp
-    // and this TU links into the same library. But we keep it a heuristic:
-    int brace = 0, bracket = 0;
-    bool in_string = false;
-    for (std::size_t i = 0; i < body.size(); ++i) {
-        char c = body[i];
-        if (c == '"' && (i == 0 || body[i-1] != '\\')) in_string = !in_string;
-        if (in_string) continue;
-        if (c == '{') ++brace;
-        else if (c == '}') --brace;
-        else if (c == '[') ++bracket;
-        else if (c == ']') --bracket;
-    }
-    if (brace != 0 || bracket != 0 || in_string) {
+    if (auto err = toml_check_syntax(body)) {
         malformed_file = true;
-        malformed_msg = "settings.toml appears malformed (unbalanced brackets)";
+        malformed_msg = std::move(*err);
     }
 }
 
@@ -697,4 +681,4 @@ FormAction settings_form_close(SettingsForm& form) {
     return form.dirty ? FormAction::Saved : FormAction::Cancelled;
 }
 
-}  // namespace flagent
+}  // namespace moocode

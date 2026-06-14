@@ -1,5 +1,5 @@
-#ifndef FLAGENT_MENTIONS_HPP
-#define FLAGENT_MENTIONS_HPP
+#ifndef MOOCODE_MENTIONS_HPP
+#define MOOCODE_MENTIONS_HPP
 
 // @-mentions: when a user prompt contains a token like "@path/to/file.cpp"
 // (or "@src/*.hpp"), the agent auto-reads the referenced file(s) and folds
@@ -17,7 +17,7 @@
 
 #include "agent/types.hpp"  // ImageBlock
 
-namespace flagent {
+namespace moocode {
 
 struct MentionOptions {
     std::filesystem::path root;             // confinement root (same rules as builtin tools)
@@ -105,6 +105,6 @@ std::pair<std::string, std::size_t>
 apply_completion(std::string_view line, const MentionContext& ctx,
                  const MentionCompletion& c);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_MENTIONS_HPP
+#endif  // MOOCODE_MENTIONS_HPP

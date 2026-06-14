@@ -1,4 +1,4 @@
-# flagent — Project Overview
+# moocode — Project Overview
 
 **A minimal but real coding agent in C++23** — an LLM loop + tools, talking to
 any OpenAI-compatible `/chat/completions` endpoint or any
@@ -16,7 +16,7 @@ Anthropic-compatible `/v1/messages` endpoint, with an interactive FTXUI TUI.
 | **Test framework** | Catch2-style (`test_harness.hpp`) via CTest |
 | **Error model** | `std::expected<T, Error>` — no exceptions |
 | **Config** | flags > `LLM_*` env vars > active profile > `settings.toml` > defaults |
-| **State dir** | `~/.flagent/` (configurable via `$FLAGENT_HOME`) |
+| **State dir** | `~/.moo/` (configurable via `$MOOCODE_HOME`) |
 
 ---
 
@@ -39,7 +39,7 @@ agent_gitea         read-only Gitea REST inspection tools
 agent_lsp           clangd-backed code intelligence (LSP JSON-RPC over stdio)
 agent_permissions   screen-free approval policy (allowlist + decide)
 agent_diff          pure LCS line diff (no I/O)
-agent_persist       ~/.flagent TOML store (toml++ confined to one TU)
+agent_persist       ~/.moo TOML store (toml++ confined to one TU)
 agent_mentions      @-mention expansion (glob, dir, sandboxed)
   ↑
 agent_core          Agent loop: assemble, dispatch tools, manage history
@@ -48,7 +48,7 @@ agent_subagent      spawn_subagent tool
   ↑
 agent_tui           Full-screen FTXUI TUI (two-pane, streaming, diff rendering)
   ↑
-flagent (main)      CLI entry point: config, tool registration, dispatch
+moocode (main)      CLI entry point: config, tool registration, dispatch
 ```
 
 Every library is a separate CMake target so tests can link each in isolation.
@@ -156,28 +156,28 @@ test_compact_cancel
 Run: `ctest --test-dir build --output-on-failure`
 
 CI presets (via `CMakePresets.json`):
-- `dev` — RelWithDebInfo, `FLAGENT_WERROR=ON`
-- `asan` — Debug, `FLAGENT_SANITIZE=address;undefined`
-- `tsan` — Debug, `FLAGENT_SANITIZE=thread`
+- `dev` — RelWithDebInfo, `MOOCODE_WERROR=ON`
+- `asan` — Debug, `MOOCODE_SANITIZE=address;undefined`
+- `tsan` — Debug, `MOOCODE_SANITIZE=thread`
 
 ---
 
 ## Bundled Dependencies
 
-Default (`-DFLAGENT_BUNDLED_CURL=ON`): fully static, feature-stripped curl chain built from source via `ExternalProject`:
+Default (`-DMOOCODE_BUNDLED_CURL=ON`): fully static, feature-stripped curl chain built from source via `ExternalProject`:
 
 ```
 zlib 1.3.1 → nghttp2 1.65.0 → OpenSSL 3.5.0 → curl 8.15.0
 ```
 
-Result: HTTPS + HTTP/2 + gzip only. Tarballs cached in `.deps-cache/`, hash-verified. `-DFLAGENT_BUNDLED_CURL=OFF` falls back to system libcurl.
+Result: HTTPS + HTTP/2 + gzip only. Tarballs cached in `.deps-cache/`, hash-verified. `-DMOOCODE_BUNDLED_CURL=OFF` falls back to system libcurl.
 
 ---
 
 ## Config Files
 
 ```
-~/.flagent/
+~/.moo/
 ├── settings.toml       base_url, model, provider, profiles, generation params
 ├── credentials.toml    per-profile API keys (0600)
 ├── permissions.toml    always-allowed tool list

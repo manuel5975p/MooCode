@@ -1,4 +1,4 @@
-// flagent: a minimal C++ coding agent. Reads LLM_* env for the OpenAI-compatible
+// moocode: a minimal C++ coding agent. Reads LLM_* env for the OpenAI-compatible
 // endpoint, registers filesystem/shell tools rooted at the current directory,
 // and runs the agent loop on a prompt from argv or stdin.
 
@@ -30,6 +30,7 @@
 #include "agent/fsutil.hpp"
 #include "agent/git_tools.hpp"
 #include "agent/gitea.hpp"
+#include "agent/gitea_internal.hpp"
 #include "agent/image_util.hpp"
 #include "agent/mentions.hpp"
 #include "agent/persist.hpp"
@@ -49,9 +50,9 @@ namespace {
 // The persist Profile must satisfy the duck-typed contract the templated
 // provider helpers (profile_kind / find_model_profile) require. Asserted here,
 // where both headers are in scope, so a drift in either is a compile error.
-static_assert(flagent::ProfileLike<flagent::Profile>);
+static_assert(moocode::ProfileLike<moocode::Profile>);
 
-using namespace flagent;
+using namespace moocode;
 
 // True if an executable named `prog` is found on $PATH. No process spawn.
 bool program_on_path(std::string_view prog) {
@@ -79,7 +80,7 @@ bool program_on_path(std::string_view prog) {
 // {DIR}/{FILES}/{TIME}/{SYSINFO} fold in live working-directory context. See
 // expand_system_prompt(). A --system override is expanded the same way.
 constexpr const char* kDefaultSystemPrompt =
-    "You are flagent the coding agent. Speak terse\n"
+    "You are moocode the coding agent. Speak terse\n"
     "Little filler, pleasantries, hedging. Fragments OK. Technical terms, code, error\n"
     "strings exact -- never abbreviate those.\n"
     "risks misread (security warnings, irreversible ops, multi-step order).\n"
@@ -94,7 +95,7 @@ constexpr const char* kDefaultSystemPrompt =
     "Time: {TIME}\n"
     "System: {SYSINFO}\n"
     "\n"
-    "@-mentions. User type @path -> flagent auto-attached that file content to\n"
+    "@-mentions. User type @path -> moocode auto-attached that file content to\n"
     "message. Shows in \"Attached files\" section: fenced block, metadata header\n"
     "(kind, line/byte count), sometimes \"key elements\" list (function/class/\n"
     "heading names) hinting where to look first. Use attachment to ground answer.\n"
@@ -176,31 +177,6 @@ std::string now_string() {
     return buf;
 }
 
-// One compact "  - name: <gist>" line per registered tool, registration order.
-// The model receives each tool's full description and argument schema via the
-// provider's tools field, so this prompt-side listing is only a name reminder:
-// the description is collapsed to its first line and clipped to keep the system
-// prompt small (the full text would otherwise be duplicated on every turn).
-std::string tool_list(const ToolRegistry& reg) {
-    std::string out;
-    for (const auto& s : reg.specs()) {
-        out += "  - " + s.name;
-        if (!s.description.empty()) out += ": " + one_line(s.description, 72);
-        out += '\n';
-    }
-    if (!out.empty()) out.pop_back();  // drop the trailing newline
-    return out;
-}
-
-// Replace every occurrence of `key` in `s` with `val`. post: no `key` remains
-// unless it reappears inside a substituted `val`.
-void substitute(std::string& s, std::string_view key, std::string_view val) {
-    for (std::size_t pos = 0; (pos = s.find(key, pos)) != std::string::npos;) {
-        s.replace(pos, key.size(), val);
-        pos += val.size();
-    }
-}
-
 // Terse project-kind label from root marker files (non-recursive). Intended to
 // seed future LSP wiring (e.g. clangd for the C/C++ variants).
 std::string detect_project(const std::filesystem::path& dir) {
@@ -241,7 +217,7 @@ std::string detect_project(const std::filesystem::path& dir) {
 void expand_system_prompt(std::string& s, const std::filesystem::path& dir,
                           const ToolRegistry& reg, bool advertise_tools) {
     substitute(s, "{TOOLS}",
-               advertise_tools ? tool_list(reg)
+               advertise_tools ? tool_list(reg, 72)
                                : std::string("(tool use disabled via --no-tools)"));
     substitute(s, "{DIR}", dir.string());
     substitute(s, "{PROJECT}", detect_project(dir));
@@ -324,13 +300,13 @@ Approval tty_approve(const ToolCall& tc) {
     }
 }
 
-// Path of the persisted Tavily monthly-quota counter under ~/.flagent (empty
+// Path of the persisted Tavily monthly-quota counter under ~/.moo (empty
 // when no home is available).
 std::string search_quota_path(const std::string& home) {
     return home.empty() ? std::string() : home + "/search_quota.json";
 }
 
-// One-time, best-effort import of the pre-~/.flagent legacy dotfiles. Never
+// One-time, best-effort import of the pre-~/.moo legacy dotfiles. Never
 // deletes the originals; only fills in a not-yet-present target.
 void migrate_legacy(const std::string& home) {
     if (home.empty()) return;
@@ -346,7 +322,7 @@ void migrate_legacy(const std::string& home) {
     const std::string base = h;
     // Legacy permissions were one tool per line; convert to permissions.toml.
     std::string perms_toml = home + "/permissions.toml";
-    std::string legacy_perms = base + "/.flagent_permissions";
+    std::string legacy_perms = base + "/.moo_permissions";
     if (!fs::exists(perms_toml, ec) && fs::exists(legacy_perms, ec)) {
         std::ifstream in(legacy_perms);
         std::set<std::string> always;
@@ -354,8 +330,8 @@ void migrate_legacy(const std::string& home) {
             if (!line.empty()) always.insert(line);
         save_permissions(home, always);
     }
-    import(base + "/.flagent_history", home + "/history");
-    import(base + "/.flagent_search_quota.json", home + "/search_quota.json");
+    import(base + "/.moo_history", home + "/history");
+    import(base + "/.moo_search_quota.json", home + "/search_quota.json");
 }
 
 // Web-search config from the environment: SEARXNG_URL (primary, default
@@ -383,7 +359,7 @@ int main(int argc, char** argv) {
         std::cerr << cli;
         std::fprintf(stderr,
                      "\nConfig precedence: flags > LLM_* env vars > "
-                     "~/.flagent/settings.toml > defaults.\n"
+                     "~/.moo/settings.toml > defaults.\n"
                      "  LLM_BASE_URL  (OpenAI default https://api.minimax.io/v1;\n"
                      "                 Anthropic default https://api.anthropic.com/v1)\n"
                      "  LLM_API_KEY   API key for the endpoint (Bearer for OpenAI,\n"
@@ -391,12 +367,12 @@ int main(int argc, char** argv) {
                      "  LLM_MODEL     model name (OpenAI default MiniMax-M3;\n"
                      "                 Anthropic default claude-sonnet-4-6)\n"
                      "  LLM_PROVIDER  openai | anthropic | auto (default auto)\n"
-                     "Named profiles live in ~/.flagent/settings.toml "
+                     "Named profiles live in ~/.moo/settings.toml "
                      "[profiles.<name>];\n"
-                     "their API keys live in ~/.flagent/credentials.toml (chmod "
+                     "their API keys live in ~/.moo/credentials.toml (chmod "
                      "0600).\n"
                      "Select one with --profile <name> or profile = \"<name>\".\n"
-                     "State lives under ~/.flagent (override with $FLAGENT_HOME).\n");
+                     "State lives under ~/.moo (override with $MOOCODE_HOME).\n");
         return 0;
     }
 
@@ -426,9 +402,9 @@ int main(int argc, char** argv) {
                              ? cli["system"].get().string
                              : std::string(kDefaultSystemPrompt);
 
-    // Persistent state under ~/.flagent ($FLAGENT_HOME). Import legacy dotfiles
+    // Persistent state under ~/.moo ($MOOCODE_HOME). Import legacy dotfiles
     // once, then load settings as the layer below env and flags.
-    const std::string home = flagent_home();
+    const std::string home = moocode_home();
     migrate_legacy(home);
     const Settings settings = load_settings(home);
 
@@ -630,7 +606,7 @@ int main(int argc, char** argv) {
     // default-on). The tools only ever see the AND-ed result.
     const bool rtk_available = program_on_path("rtk");
     int rtk_cfg = settings.rtk;  // -1 unset / 0 off / 1 on
-    if (const char* e = std::getenv("FLAGENT_RTK"); e && *e)
+    if (const char* e = std::getenv("MOOCODE_RTK"); e && *e)
         rtk_cfg = (std::string_view(e) == "0" || std::string_view(e) == "false") ? 0 : 1;
     if (cli["rtk"].was_set()) rtk_cfg = 1;
     if (cli["no-rtk"].was_set()) rtk_cfg = 0;
@@ -644,20 +620,20 @@ int main(int argc, char** argv) {
 
     // Gitea inspection tools (repos, PRs, commits, diffs, files). Every tool
     // takes an optional per-call `url`, so they are always registered;
-    // FLAGENT_GITEA_URL supplies the default instance and FLAGENT_GITEA_TOKEN
-    // its credential. FLAGENT_GITEA_AUTH names a .env-style file
+    // MOOCODE_GITEA_URL supplies the default instance and MOOCODE_GITEA_TOKEN
+    // its credential. MOOCODE_GITEA_AUTH names a .env-style file
     // (GITEA_USER=... / GITEA_PASS=...) used as Basic auth when no token is
     // set. Both credentials are sent only to the configured instance's origin.
     {
         GiteaConfig gcfg;
-        gcfg.base_url = env_or("FLAGENT_GITEA_URL", "");
-        gcfg.token = env_or("FLAGENT_GITEA_TOKEN", "");
-        if (const std::string auth_file = env_or("FLAGENT_GITEA_AUTH", "");
+        gcfg.base_url = env_or("MOOCODE_GITEA_URL", "");
+        gcfg.token = env_or("MOOCODE_GITEA_TOKEN", "");
+        if (const std::string auth_file = env_or("MOOCODE_GITEA_AUTH", "");
             !auth_file.empty()) {
             const GiteaBasicAuth auth = parse_gitea_auth(slurp(auth_file));
             if (auth.user.empty() && auth.pass.empty())
                 std::fprintf(stderr,
-                             "warning: FLAGENT_GITEA_AUTH file '%s' is unreadable or "
+                             "warning: MOOCODE_GITEA_AUTH file '%s' is unreadable or "
                              "has no GITEA_USER/GITEA_PASS\n",
                              auth_file.c_str());
             gcfg.auth_user = auth.user;
@@ -828,8 +804,8 @@ int main(int argc, char** argv) {
     // This runs after spawn_subagent registration so {TOOLS} includes it.
     expand_system_prompt(system, opts.root, reg, advertise_tools);
 
-    // Append project-local or global FLAGENT.md when present.
-    if (std::string fm = load_flagent_md(home, opts.root); !fm.empty())
+    // Append project-local or global MOO.md when present.
+    if (std::string fm = load_moocode_md(home, opts.root); !fm.empty())
         system += "\n\n" + std::move(fm);
 
     // Push the final prompt into the already-constructed agent.

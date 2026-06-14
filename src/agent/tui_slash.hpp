@@ -1,5 +1,5 @@
-#ifndef FLAGENT_TUI_SLASH_HPP
-#define FLAGENT_TUI_SLASH_HPP
+#ifndef MOOCODE_TUI_SLASH_HPP
+#define MOOCODE_TUI_SLASH_HPP
 
 // Pure decision logic for the TUI's generation-control slash commands
 // (/effort, /thinking, /temp, /theme). Each function parses one argument and
@@ -14,9 +14,9 @@
 #include <string_view>
 
 #include "agent/provider.hpp"  // GenerationParams
-#include "agent/tui.hpp"       // SyntaxTheme
+#include "agent/types.hpp"     // SyntaxTheme
 
-namespace flagent {
+namespace moocode {
 
 // Outcome of parsing a generation-control argument. When `error` is non-empty
 // the handler pushes it (usage line) and applies nothing. Otherwise it applies
@@ -53,6 +53,6 @@ struct ThemeResult {
 // Parse /theme: empty => list; a known name => that theme; else an error.
 ThemeResult parse_theme(std::string_view arg);
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_TUI_SLASH_HPP
+#endif  // MOOCODE_TUI_SLASH_HPP

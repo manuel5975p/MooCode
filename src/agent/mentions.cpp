@@ -16,7 +16,7 @@
 
 namespace fs = std::filesystem;
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -748,4 +748,4 @@ apply_completion(std::string_view line, const MentionContext& ctx,
     return {std::move(out), cursor};
 }
 
-}  // namespace flagent
+}  // namespace moocode

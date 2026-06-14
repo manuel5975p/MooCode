@@ -1,4 +1,5 @@
 #include "agent/http.hpp"
+#include "agent/http_detail.hpp"
 
 #include <chrono>
 #include <string>
@@ -8,7 +9,7 @@
 #include "loopback_server.hpp"
 #include "test_harness.hpp"
 
-using namespace flagent;
+using namespace moocode;
 
 TEST("post_json: 200 returns body and status") {
     test::LoopbackServer srv;

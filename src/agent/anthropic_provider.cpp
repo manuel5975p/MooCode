@@ -7,11 +7,12 @@
 
 #include "agent/http.hpp"
 #include "agent/json_util.hpp"
-#include "agent/openai_provider.hpp"  // normalize_base_url
+#include "agent/openai_provider.hpp"  // parse_model_ids
+#include "agent/provider_factory.hpp"  // ProviderConnection (for AnthropicConfig ctor)
 #include "agent/stream.hpp"
 #include "agent/strutil.hpp"
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -224,10 +225,10 @@ nlohmann::json build_messages_request(const AnthropicConfig& cfg,
                              {"input_schema", t.parameters}});
         req["tools"] = std::move(specs);
     }
-    // Debug: when FLAGENT_DEBUG_REQUEST is set, append a sanitised copy of the
+    // Debug: when MOOCODE_DEBUG_REQUEST is set, append a sanitised copy of the
     // outgoing request (image base64 replaced by its length) so we can confirm
     // whether image blocks actually reach the wire without dumping megabytes.
-    if (const char* dbg = std::getenv("FLAGENT_DEBUG_REQUEST")) {
+    if (const char* dbg = std::getenv("MOOCODE_DEBUG_REQUEST")) {
         nlohmann::json san = req;
         if (san.contains("messages"))
             for (auto& msg : san["messages"])
@@ -242,7 +243,7 @@ nlohmann::json build_messages_request(const AnthropicConfig& cfg,
                                     blk["source"]["data"].get<std::string>().size()) +
                                 " chars>";
         const std::string path = (dbg[0] != '\0') ? std::string(dbg)
-                                                   : std::string("/tmp/flagent_request.json");
+                                                   : std::string("/tmp/moocode_request.json");
         std::ofstream(path, std::ios::app) << san.dump(2) << "\n=====\n";
     }
     return req;
@@ -310,6 +311,10 @@ std::expected<Turn, Error> parse_messages_response(const nlohmann::json& body) {
     return turn;
 }
 
+AnthropicConfig::AnthropicConfig(const ProviderConnection& c)
+    : base_url(c.base_url), api_key(c.api_key), model(c.model),
+      max_tokens(c.max_tokens) {}
+
 AnthropicProvider::AnthropicProvider(AnthropicConfig cfg) : cfg_(std::move(cfg)) {}
 
 void AnthropicProvider::set_params(const GenerationParams& p) {
@@ -328,18 +333,15 @@ GenerationParams AnthropicProvider::params() const {
     return p;
 }
 
-void AnthropicProvider::set_model(std::string m) { cfg_.model = std::move(m); }
+void AnthropicProvider::set_model(std::string m) { provider_set_model(cfg_.model, std::move(m)); }
 
-std::string AnthropicProvider::model() const { return cfg_.model; }
+std::string AnthropicProvider::model() const { return provider_get_model(cfg_.model); }
 
-void AnthropicProvider::set_base_url(std::string url) {
-    cfg_.base_url = std::move(url);
-    normalize_base_url(cfg_.base_url);
-}
+void AnthropicProvider::set_base_url(std::string url) { provider_set_base_url(cfg_.base_url, std::move(url)); }
 
-std::string AnthropicProvider::base_url() const { return cfg_.base_url; }
+std::string AnthropicProvider::base_url() const { return provider_get_base_url(cfg_.base_url); }
 
-void AnthropicProvider::set_api_key(std::string key) { cfg_.api_key = std::move(key); }
+void AnthropicProvider::set_api_key(std::string key) { provider_set_api_key(cfg_.api_key, std::move(key)); }
 
 std::vector<std::string> AnthropicProvider::headers() const {
     std::vector<std::string> h;
@@ -450,4 +452,4 @@ std::expected<Turn, Error> AnthropicProvider::complete_stream(
     return acc.finish();
 }
 
-}  // namespace flagent
+}  // namespace moocode

@@ -8,8 +8,8 @@
 
 #include "test_harness.hpp"
 
-using namespace flagent;
-using namespace flagent::lsp;
+using namespace moocode;
+using namespace moocode::lsp;
 namespace fs = std::filesystem;
 
 // --- pure helpers: framing --------------------------------------------------

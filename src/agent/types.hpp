@@ -1,5 +1,5 @@
-#ifndef FLAGENT_TYPES_HPP
-#define FLAGENT_TYPES_HPP
+#ifndef MOOCODE_TYPES_HPP
+#define MOOCODE_TYPES_HPP
 
 // Core value types shared across every layer (http, json, provider, tools,
 // agent). Header-only: pure data, no behavior, no implementation-only APIs.
@@ -11,7 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace flagent {
+namespace moocode {
 
 // Coarse category for an Error, orthogonal to the layer-defined `code`. Lets a
 // consumer branch on the kind of failure without string-matching the message.
@@ -68,13 +68,6 @@ inline const char* role_str(Role r) noexcept {
     return "user";
 }
 
-// Legacy heuristic: true when a tool-result string starts with our serialized
-// "ERROR: " prefix. Retained ONLY as the persistence loader's back-compat
-// fallback for conversations written before `tool_failed` was a typed field;
-// the live boundary now carries failure as data (Message::tool_failed), so do
-// not introduce new callers.
-inline bool is_tool_error(std::string_view s) { return s.rfind("ERROR: ", 0) == 0; }
-
 // One conversation turn. Field relevance depends on `role`:
 //   Assistant: `content` + `tool_calls`. `parts` is unused.
 //   Tool:      `content` + `tool_call_id`. `parts` is unused.
@@ -98,14 +91,6 @@ public:
     static Message assistant(std::string content, std::vector<ToolCall> calls = {},
                              std::string reasoning = {});
     static Message tool(std::string call_id, std::string content, bool failed = false);
-
-    // Deserialization seam: build a Message field-by-field from persisted data
-    // without exposing public setters. Used ONLY by the persist loader.
-    static Message from_fields(Role role, std::string content,
-                               std::vector<ToolCall> tool_calls,
-                               std::string tool_call_id,
-                               std::vector<ContentPart> parts, bool tool_failed,
-                               std::string reasoning = {});
 
     Role role() const { return role_; }
     const std::string& content() const { return content_; }
@@ -172,22 +157,6 @@ inline Message Message::tool(std::string call_id, std::string content, bool fail
     m.tool_failed_ = failed;
     return m;
 }
-inline Message Message::from_fields(Role role, std::string content,
-                                    std::vector<ToolCall> tool_calls,
-                                    std::string tool_call_id,
-                                    std::vector<ContentPart> parts,
-                                    bool tool_failed, std::string reasoning) {
-    Message m;
-    m.role_ = role;
-    m.content_ = std::move(content);
-    m.tool_calls_ = std::move(tool_calls);
-    m.tool_call_id_ = std::move(tool_call_id);
-    m.parts_ = std::move(parts);
-    m.tool_failed_ = tool_failed;
-    m.reasoning_ = std::move(reasoning);
-    return m;
-}
-
 using Conversation = std::vector<Message>;
 
 // A tool as advertised to the model (JSON-Schema described parameters).
@@ -197,6 +166,21 @@ struct ToolSpec {
     nlohmann::json parameters;  // JSON Schema object
 };
 
-}  // namespace flagent
+// Syntax-highlight colour scheme for fenced code blocks. Lived in tui.hpp but
+// moved here so the lightweight tui_slash.hpp can name it without pulling in
+// the full tui.hpp + transitive deps. "None" disables highlighting.
+enum class SyntaxTheme { None, Default, Mono, Vivid };
 
-#endif  // FLAGENT_TYPES_HPP
+// Canonical lowercase name of a theme ("default", "mono", …); round-trips with
+// syntax_theme_from_name. Never empty. Pure, unit-testable.
+std::string_view syntax_theme_name(SyntaxTheme t);
+
+// Parse a theme name (case-insensitive). nullopt for an unknown name.
+std::optional<SyntaxTheme> syntax_theme_from_name(std::string_view name);
+
+// All theme names in display order, for /theme listing and autocomplete.
+std::vector<std::string> syntax_theme_names();
+
+}  // namespace moocode
+
+#endif  // MOOCODE_TYPES_HPP

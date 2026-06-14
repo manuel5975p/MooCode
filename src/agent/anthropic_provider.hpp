@@ -1,5 +1,5 @@
-#ifndef FLAGENT_ANTHROPIC_PROVIDER_HPP
-#define FLAGENT_ANTHROPIC_PROVIDER_HPP
+#ifndef MOOCODE_ANTHROPIC_PROVIDER_HPP
+#define MOOCODE_ANTHROPIC_PROVIDER_HPP
 
 // Anthropic-native Provider: speaks the Messages API (`/v1/messages`) wire
 // format used by api.anthropic.com and Anthropic-compatible gateways. It is the
@@ -16,10 +16,8 @@
 //   - tools advertise "input_schema" rather than "function"/"parameters";
 //   - usage is input_tokens/output_tokens (see parse_anthropic_usage).
 
-#include <concepts>
 #include <expected>
 #include <optional>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,10 +25,9 @@
 #include <nlohmann/json.hpp>
 
 #include "agent/provider.hpp"
-#include "agent/strutil.hpp"
 #include "agent/types.hpp"
 
-namespace flagent {
+namespace moocode {
 
 struct AnthropicConfig {
     std::string base_url;  // e.g. "https://api.anthropic.com/v1" (no trailing /)
@@ -46,9 +43,12 @@ struct AnthropicConfig {
     // budget, both Messages-API requirements.
     std::string reasoning_effort;    // "low"/"medium"/"high"; "" => use default budget
     std::optional<bool> thinking;    // nullopt => model default (off)
+
+    AnthropicConfig() = default;
+    explicit AnthropicConfig(const struct ProviderConnection& c);
 };
 
-// Map a flagent effort label to an Anthropic output_config.effort value
+// Map a moocode effort label to an Anthropic output_config.effort value
 // (low/medium/high/xhigh/max; "minimal" => "low"). Returns "" for unrecognised
 // labels so the caller omits the field and lets the model default apply.
 std::string effort_to_output_effort(std::string_view effort);
@@ -66,85 +66,6 @@ std::string anthropic_messages_url(std::string_view base);
 // when base already ends in "/v1"). Mirrors anthropic_messages_url. pre: base
 // has no trailing slash. Total.
 std::string anthropic_models_url(std::string_view base);
-
-// Which backend wire format a base_url/model pair speaks.
-enum class ProviderKind { OpenAI, Anthropic, Gemini };
-
-// An explicit user choice; Auto means "decide via detect_provider_kind".
-enum class ProviderChoice { Auto, OpenAI, Anthropic, Gemini };
-
-// Human-readable label for the status bar / logs ("openai" / "anthropic").
-const char* provider_kind_name(ProviderKind k);
-
-// A named convenience bundle (wire format + endpoint + model) so a user can
-// write e.g. `--provider deepseek-flash` instead of spelling out a base URL and
-// model. Presets target each vendor's OpenAI-native endpoint (the richer,
-// standard path; the Anthropic-compatible endpoint stays reachable by passing
-// its base URL explicitly).
-struct ProviderPreset {
-    ProviderKind kind;
-    std::string base_url;
-    std::string model;
-};
-
-// Resolve a preset name (case-insensitive): "minimax", "deepseek"/"deepseek-pro",
-// "deepseek-flash", "gemini"/"google" (native), "gemini-openai" (compat shim).
-// Returns std::nullopt for non-preset values (openai/anthropic/auto and anything
-// unrecognised), so callers fall back to parse_provider_choice.
-std::optional<ProviderPreset> lookup_preset(std::string_view name);
-
-// Parse a --provider / $LLM_PROVIDER / settings value. "anthropic"/"claude" =>
-// Anthropic; "openai"/"oai"/"chat"/"gpt" => OpenAI; "gemini"/"google" => Gemini;
-// anything else (incl. "", "auto") => Auto. Case-insensitive. Total.
-ProviderChoice parse_provider_choice(std::string_view s);
-
-// Autodetect the wire format from the endpoint: a base_url whose host contains
-// "anthropic" => Anthropic; a Google "generativelanguage"/"googleapis" host =>
-// Gemini (unless the path names the "/openai" compat shim, which is OpenAI);
-// otherwise OpenAI. `model` is reserved for future heuristics and currently
-// unused so OpenAI-compatible gateways are not misclassified. Total.
-ProviderKind detect_provider_kind(std::string_view base_url,
-                                  std::string_view model);
-
-// The duck-typed contract the templated profile helpers below require: string
-// .kind/.base_url/.model members and a .models range. Stated as a concept so
-// this layer documents the contract and yields readable diagnostics without a
-// dependency on agent_persist's Profile (the layering keeps persist
-// provider-agnostic). The real Profile satisfies it (verified at build time).
-template <class P>
-concept ProfileLike = requires(const P& p) {
-    { p.kind }     -> std::convertible_to<std::string_view>;
-    { p.base_url } -> std::convertible_to<std::string_view>;
-    { p.model }    -> std::convertible_to<std::string_view>;
-    { p.models }   -> std::ranges::range;
-};
-
-// Translate a profile's "kind" string into a ProviderKind, falling back to
-// detection from its base_url/model when kind is empty/"auto". Templated on the
-// profile type so this layer needs no dependency on agent_persist's Profile
-// (the layering keeps persist provider-agnostic). Total.
-template <ProfileLike ProfileT>
-ProviderKind profile_kind(const ProfileT& p) {
-    ProviderChoice c = parse_provider_choice(p.kind);
-    if (c == ProviderChoice::Anthropic) return ProviderKind::Anthropic;
-    if (c == ProviderChoice::OpenAI) return ProviderKind::OpenAI;
-    if (c == ProviderChoice::Gemini) return ProviderKind::Gemini;
-    return detect_provider_kind(p.base_url, p.model);
-}
-
-// Find the first profile in `profiles` whose `models[]` contains `name`
-// (case-insensitive). Returns nullptr when none serves it. Templated to avoid a
-// dependency on agent_persist's Profile. pre: each profile has a .models range
-// of strings.
-template <ProfileLike ProfileT>
-const ProfileT* find_model_profile(std::string_view name,
-                                   const std::vector<ProfileT>& profiles) {
-    const std::string want = to_lower(name);
-    for (const ProfileT& p : profiles)
-        for (const auto& m : p.models)
-            if (to_lower(m) == want) return &p;
-    return nullptr;
-}
 
 // Build the /messages request body. Pure (no I/O). Extracts System messages
 // into the top-level "system" field, coalesces consecutive Tool-role messages
@@ -197,6 +118,6 @@ private:
     std::vector<std::string> headers() const;
 };
 
-}  // namespace flagent
+}  // namespace moocode
 
-#endif  // FLAGENT_ANTHROPIC_PROVIDER_HPP
+#endif  // MOOCODE_ANTHROPIC_PROVIDER_HPP

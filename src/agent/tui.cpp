@@ -19,6 +19,8 @@
 #include <unistd.h>  // write, close, STDOUT_FILENO
 
 #include "agent/anthropic_provider.hpp"  // ProviderKind, provider_kind_name
+#include "agent/agent.hpp"
+#include "agent/builtin_tools.hpp"
 #include "agent/image_chip.hpp"
 #include "agent/image_util.hpp"
 #include "agent/json_util.hpp"  // parse spawn_subagent args for the group label
@@ -26,6 +28,7 @@
 #include "agent/openai_provider.hpp"  // openai_model_likely_reasoning
 #include "agent/persist.hpp"
 #include "agent/provider_factory.hpp"  // ProviderConnection, make_provider
+#include "agent/question_tool.hpp"
 #include "agent/strutil.hpp"           // to_lower
 #include "agent/settings_editor.hpp"  // SettingsForm, FieldDef, FormAction
 #include "agent/syntax_highlight.hpp"  // highlight_block, language_from_tag
@@ -42,7 +45,7 @@
 #include <ftxui/screen/color.hpp>
 #include <ftxui/screen/terminal.hpp>
 
-namespace flagent {
+namespace moocode {
 
 namespace {
 
@@ -255,6 +258,10 @@ void TuiState::apply_message(const Message& m) {
             a.args_full = full_text(tc.arguments_json);
             a.started = std::chrono::steady_clock::now();
             activity_.push_back(std::move(a));
+            // Mirror the call inline in the chat log, referencing the activity
+            // by id so status/output stay single-sourced (the Tool result flips
+            // the activity; the inline row re-reads it on the next render).
+            chat_.push_back({ChatKind::ToolUse, tc.id, {}});
             // A spawn_subagent call opens a group; its internal tool calls land
             // there via push_subagent_activity rather than in `activity_`.
             if (tc.name == "spawn_subagent") {
@@ -448,8 +455,15 @@ const TuiState::SubagentGroup* TuiState::find_group(std::string_view id) const {
 std::optional<NodeKey> TuiState::detail_node() const {
     if (selection_) {
         if (selection_->pane == NodeKey::Pane::Chat &&
-            selection_->chat_index < chat_.size())
+            selection_->chat_index < chat_.size()) {
+            // An inline tool-use row resolves to its Activity so the detail pane
+            // shows the call's full I/O (or its sub-agent group), exactly as if
+            // the Activity-pane row had been clicked.
+            const auto& e = chat_[selection_->chat_index];
+            if (e.kind == ChatKind::ToolUse)
+                return NodeKey{NodeKey::Pane::Activity, 0, e.text, ""};
             return selection_;
+        }
         if (selection_->pane == NodeKey::Pane::Activity &&
             find_activity(*selection_))
             return selection_;
@@ -513,6 +527,32 @@ std::string tool_arg_summary(std::string_view arguments_json) {
             if (auto v = json::get_string_opt(*j, k); v && *v && !(*v)->empty())
                 return sanitize_tui_text(one_line(**v, 200));
     return sanitize_tui_text(one_line(arguments_json, 200));
+}
+
+std::string last_lines(std::string_view text, std::size_t n) {
+    if (n == 0) return {};
+    // Split on '\n', stripping any trailing '\r', then drop trailing blank
+    // lines so a tool whose output ends in newlines doesn't preview as blanks.
+    std::vector<std::string_view> lines;
+    std::size_t pos = 0;
+    while (pos <= text.size()) {
+        std::size_t nl = text.find('\n', pos);
+        std::string_view seg = text.substr(
+            pos, nl == std::string_view::npos ? std::string_view::npos : nl - pos);
+        if (!seg.empty() && seg.back() == '\r') seg.remove_suffix(1);
+        lines.push_back(seg);
+        if (nl == std::string_view::npos) break;
+        pos = nl + 1;
+    }
+    while (!lines.empty() && lines.back().empty()) lines.pop_back();
+    if (lines.empty()) return {};
+    std::size_t start = lines.size() > n ? lines.size() - n : 0;
+    std::string out;
+    for (std::size_t i = start; i < lines.size(); ++i) {
+        if (i != start) out += '\n';
+        out += lines[i];
+    }
+    return out;
 }
 
 // --- syntax theme names -----------------------------------------------------
@@ -595,8 +635,8 @@ namespace {
 
 using namespace ftxui;
 
-// ~/.flagent/history (empty when persistence is off). One-time best-effort
-// migration of the legacy ~/.flagent_history file the first time it is needed.
+// ~/.moo/history (empty when persistence is off). One-time best-effort
+// migration of the legacy ~/.moo_history file the first time it is needed.
 std::string history_path(const std::string& home) {
     if (home.empty()) return {};
     std::string path = home + "/history";
@@ -604,7 +644,7 @@ std::string history_path(const std::string& home) {
     if (!std::filesystem::exists(path, ec)) {
         const char* h = std::getenv("HOME");
         if (h) {
-            std::string legacy = std::string(h) + "/.flagent_history";
+            std::string legacy = std::string(h) + "/.moo_history";
             if (std::filesystem::exists(legacy, ec)) {
                 std::filesystem::create_directories(home, ec);
                 std::filesystem::copy_file(legacy, path, ec);  // never delete legacy
@@ -774,6 +814,10 @@ struct Hit {
 };
 using HitMap = std::deque<Hit>;
 
+// Defined below; render_chat renders inline tool-use rows using both.
+Element status_glyph(TuiState::Status s, std::size_t frame, bool quiet);
+Element paragraph_block(std::string_view body);
+
 Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
                     bool follow) {
     Elements out;
@@ -787,7 +831,7 @@ Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
                 ev.push_back(paragraph(e.text) | color(Color::GrayLight));
                 break;
             case TuiState::ChatKind::Assistant:
-                ev.push_back(text("▌ flagent") | bold | color(Color::CyanLight));
+                ev.push_back(text("▌ moocode") | bold | color(Color::CyanLight));
                 ev.push_back(render_markdownish(e.text, st.syntax_theme()));
                 break;
             case TuiState::ChatKind::Reasoning:
@@ -824,6 +868,29 @@ Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
             case TuiState::ChatKind::Diff:
                 ev.push_back(render_diff_block(e.text, e.diff, /*full=*/false));
                 break;
+            case TuiState::ChatKind::ToolUse: {
+                // e.text holds the tool_call_id; the Activity is the source of
+                // truth for name/args/status/output (set by apply_message).
+                const TuiState::Activity* a =
+                    st.find_activity({NodeKey::Pane::Activity, 0, e.text, ""});
+                if (!a) break;
+                // ✓/✗/spinner  ToolName(args) — name in blue, args dimmed.
+                ev.push_back(hbox({
+                    status_glyph(a->status, frame, /*quiet=*/false),
+                    text(" "),
+                    text(a->name) | bold | color(Color::Blue),
+                    text("(" + a->args + ")") | color(Color::GrayLight),
+                }));
+                // Last 3 lines of output in gray, indented under the row.
+                if (a->status != TuiState::Status::Running) {
+                    std::string tail = last_lines(a->result_full, 3);
+                    if (!tail.empty())
+                        ev.push_back(hbox({text("  "),
+                                           paragraph_block(tail) |
+                                               color(Color::GrayDark)}));
+                }
+                break;
+            }
         }
         NodeKey key{NodeKey::Pane::Chat, i, "", ""};
         if (sel && *sel == key && !ev.empty()) {
@@ -837,7 +904,7 @@ Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
         out.push_back(separatorEmpty());
     }
     if (out.empty())
-        out.push_back(text("Ask flagent anything about this directory.") | dim);
+        out.push_back(text("Ask moocode anything about this directory.") | dim);
     return vbox(std::move(out));
 }
 
@@ -1512,6 +1579,24 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
     std::atomic<std::size_t> frame{0};  // spinner tick, advanced off the render path
 
+    // Messages typed while the agent is streaming: enqueued and auto-sent as
+    // the next turn(s) when the current one finishes. @-mention expansion and
+    // image scanning are done at submit time (UI thread); the worker just
+    // calls agent.run() with the pre-expanded data.
+    struct QueuedPrompt {
+        std::string expanded_prompt;            // after @-mention expansion
+        std::vector<ContentPart> user_parts;    // text + images
+        std::string original_line;              // what the user typed (for history / chat)
+        std::vector<MentionEntry> entries;      // for the 📎 info line
+        std::size_t total_bytes = 0;            // for the info line
+        std::vector<ImageBlock> scanned_images; // from scan_image_paths
+        std::vector<std::string> scan_errors;   // from scan_image_paths
+    };
+    std::deque<QueuedPrompt> pending_queue;  // UI enqueues, worker dequeues
+    // Esc / cancel clears the queue so queued messages don't auto-fire after a
+    // user interrupt. Checked by the worker between turns.
+    bool drain_queue = false;
+
     // Worker thread: drains submitted work items (prompts and compactions) and
     // runs each so the UI stays responsive. Streaming callbacks (above) push into
     // `state` and request redraws. The per-kind bodies live in these closures;
@@ -1523,15 +1608,98 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         {
             std::lock_guard lk(state_mtx);
             state.set_running(true);
+            drain_queue = false;  // fresh submit clears any prior Esc
         }
         post();
         auto res = agent.run(text, std::move(user_parts));
+        bool cancelled = agent.cancel_flag().load(std::memory_order_relaxed);
         {
             std::lock_guard lk(state_mtx);
             if (!res) state.push_error("error: " + res.error().msg);
-            state.set_running(false);
+            // On cancel or error, drain the queue so queued messages don't
+            // auto-fire after a user interrupt or failure.
+            if (cancelled || !res) {
+                pending_queue.clear();
+                drain_queue = false;
+                state.set_running(false);
+                save_now();
+                post();
+                return;
+            }
         }
         save_now();  // persist the turn (no UI race: history is settled)
+
+        // Process any messages queued while this turn was streaming.
+        for (;;) {
+            QueuedPrompt qp;
+            {
+                std::lock_guard lk(state_mtx);
+                if (drain_queue || pending_queue.empty()) {
+                    state.set_running(false);
+                    break;
+                }
+                qp = std::move(pending_queue.front());
+                pending_queue.pop_front();
+
+                state.set_parent_model(info.model);
+                state.push_user(qp.original_line);
+                // Show attachment info the same way submit() does.
+                if (!qp.entries.empty()) {
+                    std::size_t ok = 0, err = 0;
+                    for (const auto& e : qp.entries) {
+                        if (e.error.empty()) ++ok;
+                        else ++err;
+                    }
+                    std::ostringstream ai;
+                    ai << "📎 " << ok << " file(s) attached via @-mentions ("
+                       << qp.total_bytes << " B, " << err << " error(s))";
+                    for (const auto& e : qp.entries) {
+                        if (!e.error.empty())
+                            ai << "\n  ! " << e.path << ": " << e.error;
+                        else
+                            ai << "\n  · " << e.path << "  (" << e.kind << ", "
+                               << e.lines << " lines)";
+                    }
+                    state.push_info(ai.str());
+                }
+                if (!qp.scanned_images.empty()) {
+                    std::ostringstream si;
+                    si << "🖼 " << qp.scanned_images.size()
+                       << " image(s) detected in prompt";
+                    for (const auto& img : qp.scanned_images)
+                        si << "\n  · " << img.media_type << " ("
+                           << human_tokens(
+                                  static_cast<int>(img.base64_data.size() / 4))
+                           << " tok)";
+                    for (const auto& e : qp.scan_errors)
+                        si << "\n  ! " << e;
+                    state.push_info(si.str());
+                }
+                // Remaining-queue count, so the user sees the backlog shrinking.
+                if (!pending_queue.empty()) {
+                    std::ostringstream ri;
+                    ri << "⏳ " << pending_queue.size() << " more queued";
+                    state.push_info(ri.str());
+                }
+            }
+            post();
+            res = agent.run(qp.expanded_prompt, std::move(qp.user_parts));
+            cancelled = agent.cancel_flag().load(std::memory_order_relaxed);
+            {
+                std::lock_guard lk(state_mtx);
+                if (!res) state.push_error("error: " + res.error().msg);
+                if (cancelled || !res) {
+                    pending_queue.clear();
+                    drain_queue = false;
+                    state.set_running(false);
+                    save_now();
+                    post();
+                    return;
+                }
+            }
+            save_now();
+            post();
+        }
         post();
     };
     worker_deps.run_detect = [&](std::string profile, bool silent) {
@@ -1600,7 +1768,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         // pushed a "compacting …" info line. The blocking LLM summarise
         // call lives here so the UI stays responsive and Esc→cancel
         // works. On completion we update history, save, and report.
-        const int before_tok = Agent::estimated_tokens(agent.history());
+        const int before_tok = estimated_tokens(agent.history());
         auto new_conv = agent.compact(instructions);
         if (!new_conv) {
             std::lock_guard lk(state_mtx);
@@ -1610,7 +1778,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             save_now();  // persist the shortened conversation in place
             std::lock_guard lk(state_mtx);
             state.load(*new_conv);
-            const int after_tok = Agent::estimated_tokens(*new_conv);
+            const int after_tok = estimated_tokens(*new_conv);
             state.push_info("compacted: " + human_tokens(before_tok) + " → " +
                             human_tokens(after_tok) + " tok");
         }
@@ -1820,7 +1988,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // first match in profile order wins. Returns nullptr when no profile serves
     // it (then /model only changes the model string, keeping the endpoint).
     auto find_model_profile = [&](std::string_view name) -> const Profile* {
-        return flagent::find_model_profile(name, profiles);
+        return moocode::find_model_profile(name, profiles);
     };
 
     // The session key for the active profile (credentials.toml else the startup
@@ -2196,14 +2364,29 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         }
 
         // Slash commands act on the conversation before anything is sent to
-        // the model. They are refused while a turn is in flight.
+        // the model. Conversation-modifying ones are refused while a turn is
+        // in flight; generation controls and read-only commands are let through
+        // (they only affect the next turn, never the in-flight one).
         if (!line.empty() && line[0] == '/') {
             if (busy) {
-                std::lock_guard lk(state_mtx);
-                state.push_error("busy: finish the current turn first");
-                input_content.clear();
-                post();
-                return;
+                // Commands safe to run mid-turn: generation controls, display-
+                // only, or settings (which don't touch conversation history).
+                auto safe_while_busy = [&] {
+                    for (auto cmd : {"/model", "/provider", "/effort",
+                                     "/thinking", "/temp", "/temperature",
+                                     "/theme", "/system", "/settings"}) {
+                        if (line == cmd || line.starts_with(std::string(cmd) + " "))
+                            return true;
+                    }
+                    return false;
+                };
+                if (!safe_while_busy()) {
+                    std::lock_guard lk(state_mtx);
+                    state.push_error("busy: finish the current turn first");
+                    input_content.clear();
+                    post();
+                    return;
+                }
             }
             // No-argument commands that act on the conversation state directly.
             if (line == "/continue") {
@@ -2297,7 +2480,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 line.starts_with("/compact ")) {
                 const std::size_t before = agent.history().size();
                 const int before_tok =
-                    Agent::estimated_tokens(agent.history());
+                    estimated_tokens(agent.history());
                 {
                     std::lock_guard lk(state_mtx);
                     if (before == 0) {
@@ -2373,11 +2556,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             return;
         }
 
-        if (busy) return;  // ignore plain submits while a turn is in flight
         // @-mentions: read-only file auto-attach. The user's typed prompt is
         // what they see in the chat log; the worker gets the augmented version
         // (original + an "Attached files" section) so the model can ground
         // its answer in the file contents. Same byte/file caps as the CLI.
+        // Expansion runs on the UI thread whether or not the agent is busy —
+        // when busy the result is enqueued for the next turn(s).
         MentionOptions mopt;
         mopt.root = std::filesystem::path(info.cwd);
         mopt.max_file_bytes = 64 * 1024;
@@ -2410,6 +2594,46 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 user_parts.push_back(ContentPart{"", std::move(it->block)});
         }
         clip_images.clear();
+
+        history.push_back(line);
+        hist_pos = history.size();
+        append_history(hist_path, line);
+
+        if (busy) {
+            // Agent is mid-turn: enqueue for the next turn(s). The worker
+            // dequeues and runs each in FIFO order after the current turn
+            // finishes. Queued messages never start a new conversation file
+            // (conv_path is already minted by the first non-busy submit).
+            QueuedPrompt qp;
+            qp.expanded_prompt = std::move(expansion.prompt);
+            qp.user_parts = std::move(user_parts);
+            qp.original_line = line;
+            qp.entries = std::move(expansion.entries);
+            qp.total_bytes = expansion.total_bytes;
+            qp.scanned_images = std::move(scanned.images);
+            qp.scan_errors = std::move(scanned.errors);
+            {
+                std::lock_guard lk(state_mtx);
+                // Truncated one-line preview so the user sees what they typed
+                // while the current turn is still streaming.
+                std::string preview = line;
+                for (auto& c : preview)
+                    if (c == '\n' || c == '\r') c = ' ';
+                constexpr std::size_t max_preview = 100;
+                if (preview.size() > max_preview) {
+                    preview.resize(max_preview);
+                    preview += "…";
+                }
+                pending_queue.push_back(std::move(qp));
+                std::ostringstream qi;
+                qi << "⏳ queued (" << pending_queue.size() << " ahead): \""
+                   << preview << "\"";
+                state.push_info(qi.str());
+            }
+            clear_input();
+            post();
+            return;
+        }
 
         {
             std::lock_guard lk(state_mtx);
@@ -2464,9 +2688,6 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 if (meta.title.empty()) meta.title = one_line(line, 80);
             }
         }
-        history.push_back(line);
-        hist_pos = history.size();
-        append_history(hist_path, line);
         clear_input();
         worker.submit({WorkItem::Prompt, std::move(expansion.prompt),
                        std::move(user_parts)});
@@ -2509,7 +2730,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     InputOption iopt;
     iopt.content = &input_content;
     iopt.cursor_position = &cursor_pos;
-    iopt.placeholder = "ask flagent…  (/exit to quit · @ to attach files · Ctrl+V paste img)";
+    iopt.placeholder = "ask moocode…  (/exit to quit · @ to attach files · Ctrl+V paste img)";
     iopt.multiline = false;
     iopt.on_change = [&] {
         refresh_complete();
@@ -2585,7 +2806,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         }
 
         Element status = hbox({
-            text(" flagent ") | bold | bgcolor(Color::Cyan) | color(Color::Black),
+            text(" moocode ") | bold | bgcolor(Color::Cyan) | color(Color::Black),
             live_provider.empty()
                 ? text(" ")
                 : text(" " + live_provider + " ") | bold | color(Color::Magenta),
@@ -2601,7 +2822,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             text(tok) | color(Color::GrayLight),
             state.running()
                 ? hbox({text(spin_glyph(frame_now)) | color(Color::Yellow),
-                        text(" " + busy_word(state.busy_seed()) + " ")})
+                        text(" " + busy_word(state.busy_seed())),
+                        pending_queue.empty()
+                            ? text("")
+                            : text(" [" + std::to_string(pending_queue.size()) +
+                                   " queued]") | dim,
+                        text(" ")})
                 : (text(" idle ") | dim),
         });
 
@@ -3553,6 +3779,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             bool running;
             { std::lock_guard lk(state_mtx); running = state.running(); }
             if (running) {
+                drain_queue = true;  // also drop any queued messages
                 agent.cancel();
                 return true;
             }
@@ -3733,4 +3960,4 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     return 0;
 }
 
-}  // namespace flagent
+}  // namespace moocode
