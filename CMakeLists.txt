@@ -60,7 +60,29 @@ if(MOOCODE_BUNDLED_CURL)
 else()
   find_package(CURL REQUIRED)
 endif()
-find_package(nlohmann_json REQUIRED)
+# nlohmann_json ships config under /usr/share/cmake on systems where CMake
+# doesn't search there by default; hint it.
+if(NOT nlohmann_json_DIR AND EXISTS /usr/share/cmake/nlohmann_json)
+  set(nlohmann_json_DIR /usr/share/cmake/nlohmann_json)
+endif()
+find_package(nlohmann_json QUIET)
+# Fall back to the bundled single-header json.hpp when no installed package is
+# found, so the build works on machines without the nlohmann_json dev package.
+# The header is included as <nlohmann/json.hpp>, so stage it under a generated
+# include root that carries the expected "nlohmann/" subdirectory.
+if(NOT nlohmann_json_FOUND)
+  if(NOT EXISTS ${PROJECT_SOURCE_DIR}/json.hpp)
+    message(FATAL_ERROR
+      "nlohmann_json package not found and bundled json.hpp is missing")
+  endif()
+  set(_njson_inc ${PROJECT_BINARY_DIR}/bundled-nlohmann)
+  configure_file(${PROJECT_SOURCE_DIR}/json.hpp
+                 ${_njson_inc}/nlohmann/json.hpp COPYONLY)
+  add_library(nlohmann_json INTERFACE)
+  target_include_directories(nlohmann_json INTERFACE ${_njson_inc})
+  add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+  message(STATUS "nlohmann_json: using bundled json.hpp (${PROJECT_SOURCE_DIR}/json.hpp)")
+endif()
 
 # FTXUI: the terminal-UI toolkit behind the interactive TUI. Fetched and built
 # from the pinned v6.1.9 release tarball (examples/docs/tests off). Declared
