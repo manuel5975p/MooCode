@@ -10,7 +10,7 @@ lives in `cmake/BundledCurl.cmake`.
 ### Toolchain
 - `cmake_minimum_required(VERSION 3.20)`, C++23 (`std::expected`),
   extensions off.
-- Default build type `RelWithDebInfo` when none is set; respects existing
+- Default build type `Release` when none is set; respects existing
   multi-config generators via the `CMAKE_CONFIGURATION_TYPES` guard.
 - Project-wide `-Wall -Wextra -Wpedantic` — see "Warnings" below.
 

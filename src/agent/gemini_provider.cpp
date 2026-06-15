@@ -161,6 +161,21 @@ nlohmann::json build_generate_request(const GeminiConfig& cfg,
         ++i;
     }
 
+    // Gemini requires strictly alternating user/model turns. A prompt buffered
+    // mid-turn lands as a user turn right after the functionResponse user turn,
+    // so merge consecutive same-role contents by concatenating their parts —
+    // otherwise the API rejects the back-to-back user roles.
+    nlohmann::json merged = nlohmann::json::array();
+    for (auto& c : contents) {
+        if (!merged.empty() &&
+            merged.back().value("role", "") == c.value("role", "")) {
+            for (auto& p : c["parts"]) merged.back()["parts"].push_back(std::move(p));
+        } else {
+            merged.push_back(std::move(c));
+        }
+    }
+    contents = std::move(merged);
+
     req["contents"] = std::move(contents);
     if (!system_text.empty())
         req["systemInstruction"]["parts"] =
@@ -317,7 +332,8 @@ std::expected<std::vector<std::string>, Error> GeminiProvider::list_models() {
             .msg = "HTTP " + std::to_string(resp->status) + detail,
             .code = static_cast<int>(resp->status)});
     }
-    return parse_gemini_model_ids(*parsed);
+    return json::guard_or([&] { return parse_gemini_model_ids(*parsed); },
+                          std::vector<std::string>{});
 }
 
 std::expected<Turn, Error> GeminiProvider::complete(
@@ -336,7 +352,8 @@ std::expected<Turn, Error> GeminiProvider::complete(
             .code = static_cast<int>(resp->status)});
     }
 
-    auto turn = parse_generate_response(*parsed);
+    auto turn = json::guard("gemini response",
+                            [&] { return parse_generate_response(*parsed); });
     if (!turn) {
         if (resp->status < 200 || resp->status >= 300)
             return std::unexpected(Error{
@@ -366,7 +383,8 @@ std::expected<Turn, Error> GeminiProvider::complete_stream(
         for (const auto& ev : events) {
             auto parsed = json::parse(ev);
             if (!parsed) continue;  // skip a malformed event, keep streaming
-            GeminiStreamAccumulator::Added a = acc.ingest(*parsed);
+            GeminiStreamAccumulator::Added a = json::guard_or(
+                [&] { return acc.ingest(*parsed); }, GeminiStreamAccumulator::Added{});
             if (on_delta && (!a.answer.empty() || !a.reasoning.empty()))
                 on_delta(a.answer, a.reasoning);
         }
@@ -381,8 +399,9 @@ std::expected<Turn, Error> GeminiProvider::complete_stream(
     if (*status < 200 || *status >= 300) {
         std::string detail;
         if (auto parsed = json::parse(raw); parsed) {
-            if (auto err = parse_generate_response(*parsed); !err)
-                detail = err.error().msg;
+            auto err = json::guard("gemini response",
+                                   [&] { return parse_generate_response(*parsed); });
+            if (!err) detail = err.error().msg;
         }
         if (detail.empty()) detail = raw.substr(0, 200);
         return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " + detail,

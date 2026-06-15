@@ -4,7 +4,7 @@
   "configurePresets": [
     { "name": "dev", "generator": "Ninja", "binaryDir": "${sourceDir}/build",
       "cacheVariables": { "MOOCODE_BUNDLED_CURL": "OFF", "BUILD_TESTING": "ON",
-        "MOOCODE_WERROR": "ON", "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "MOOCODE_WERROR": "ON", "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON" } },
     { "name": "asan", "inherits": "dev", "binaryDir": "${sourceDir}/build-asan",
       "cacheVariables": { "MOOCODE_SANITIZE": "address;undefined",

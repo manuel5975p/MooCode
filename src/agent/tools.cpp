@@ -2,7 +2,8 @@
 
 #include <algorithm>
 
-#include "agent/strutil.hpp"  // one_line
+#include "agent/json_util.hpp"  // json::guard
+#include "agent/strutil.hpp"    // one_line
 
 namespace moocode {
 
@@ -33,7 +34,10 @@ std::expected<std::string, Error> ToolRegistry::invoke(
         tools_, [&](const Tool& t) { return t.spec.name == name; });
     if (it == tools_.end())
         return std::unexpected(Error{.msg = "unknown tool: " + name, .code = 0});
-    return it->run(args);
+    // Defense in depth: a malformed/foreign argument shape must surface as a
+    // recoverable tool error, never an uncaught nlohmann exception that aborts
+    // the process. This single boundary covers every registered tool.
+    return json::guard("tool '" + name + "'", [&] { return it->run(args); });
 }
 
 std::string tool_list(const ToolRegistry& reg, std::size_t desc_clip) {

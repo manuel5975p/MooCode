@@ -72,6 +72,31 @@ nlohmann::json build_chat_request(const OpenAiConfig& cfg, const Conversation& c
 
     nlohmann::json messages = nlohmann::json::array();
     for (const auto& m : conv) messages.push_back(message_json(m));
+    // Merge consecutive user messages into one. A prompt buffered mid-turn can
+    // be injected right after another user turn (e.g. before the first request);
+    // collapsing them to a single content array keeps strict servers that reject
+    // back-to-back user roles happy. Tool/assistant messages are never merged.
+    {
+        auto to_array = [](const nlohmann::json& c) {
+            if (c.is_array()) return c;
+            nlohmann::json arr = nlohmann::json::array();
+            if (c.is_string() && !c.get<std::string>().empty())
+                arr.push_back({{"type", "text"}, {"text", c}});
+            return arr;
+        };
+        nlohmann::json out = nlohmann::json::array();
+        for (auto& m : messages) {
+            if (!out.empty() && out.back().value("role", "") == "user" &&
+                m.value("role", "") == "user") {
+                nlohmann::json arr = to_array(out.back()["content"]);
+                for (auto& blk : to_array(m["content"])) arr.push_back(std::move(blk));
+                out.back()["content"] = std::move(arr);
+            } else {
+                out.push_back(std::move(m));
+            }
+        }
+        messages = std::move(out);
+    }
     req["messages"] = std::move(messages);
 
     if (!tools.empty()) {
@@ -211,7 +236,8 @@ std::expected<std::vector<std::string>, Error> OpenAiProvider::list_models() {
                                          detail,
             .code = static_cast<int>(resp->status)});
     }
-    return parse_model_ids(*parsed);
+    return json::guard_or([&] { return parse_model_ids(*parsed); },
+                          std::vector<std::string>{});
 }
 
 std::expected<Turn, Error> OpenAiProvider::complete(
@@ -235,7 +261,8 @@ std::expected<Turn, Error> OpenAiProvider::complete(
             .code = static_cast<int>(resp->status)});
     }
 
-    auto turn = parse_chat_response(*parsed);
+    auto turn = json::guard("openai response",
+                            [&] { return parse_chat_response(*parsed); });
     if (!turn) {
         // Attach HTTP status for non-2xx so auth/quota errors are unambiguous.
         if (resp->status < 200 || resp->status >= 300)
@@ -270,7 +297,8 @@ std::expected<Turn, Error> OpenAiProvider::complete_stream(
         for (const auto& ev : events) {
             auto parsed = json::parse(ev);
             if (!parsed) continue;  // skip a malformed event, keep streaming
-            StreamAccumulator::Added a = acc.ingest(*parsed);
+            StreamAccumulator::Added a = json::guard_or(
+                [&] { return acc.ingest(*parsed); }, StreamAccumulator::Added{});
             if (on_delta && (!a.answer.empty() || !a.reasoning.empty()))
                 on_delta(a.answer, a.reasoning);
         }
@@ -285,7 +313,9 @@ std::expected<Turn, Error> OpenAiProvider::complete_stream(
     if (*status < 200 || *status >= 300) {
         std::string detail;
         if (auto parsed = json::parse(raw); parsed) {
-            if (auto err = parse_chat_response(*parsed); !err) detail = err.error().msg;
+            auto err = json::guard("openai response",
+                                   [&] { return parse_chat_response(*parsed); });
+            if (!err) detail = err.error().msg;
         }
         if (detail.empty()) detail = raw.substr(0, 200);
         return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " + detail,

@@ -53,6 +53,15 @@ std::expected<std::string, Error> run_process(
     if (::pipe(pipefd) != 0)
         return std::unexpected(Error{.msg = std::string("pipe: ") + std::strerror(errno), .code = 0});
 
+    // Build the exec argv in the parent: with tool calls now running on parallel
+    // threads (see Agent::run), forks happen concurrently, and the post-fork
+    // child must touch only async-signal-safe calls — no heap allocation. The
+    // char* point into `argv`'s strings, valid in the forked child's copy.
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (const std::string& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    cargv.push_back(nullptr);
+
     pid_t pid = ::fork();
     if (pid < 0) {
         ::close(pipefd[0]);
@@ -70,10 +79,6 @@ std::expected<std::string, Error> run_process(
         ::dup2(pipefd[1], STDERR_FILENO);
         ::close(pipefd[0]);
         ::close(pipefd[1]);
-        std::vector<char*> cargv;
-        cargv.reserve(argv.size() + 1);
-        for (const std::string& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
-        cargv.push_back(nullptr);
         ::execvp(cargv[0], cargv.data());
         _exit(127);  // exec failed
     }

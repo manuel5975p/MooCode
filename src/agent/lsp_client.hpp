@@ -18,6 +18,7 @@
 #include <expected>
 #include <filesystem>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -118,6 +119,13 @@ public:
     // Cooperative cancel: when set and observed true, blocking reads abort.
     void watch_cancel(const std::atomic<bool>* c) { cancel_ = c; }
 
+    // Serialises tool-level access to the single clangd connection. The session
+    // is one stateful JSON-RPC pipe; with tool calls now running concurrently
+    // (see Agent::run), each clangd tool locks this for the whole of its
+    // sync+query sequence so requests never interleave on the wire. Held only by
+    // the clangd tools, never by the session's own methods, so no re-entrancy.
+    std::mutex& io_mutex() { return io_mtx_; }
+
 private:
     std::expected<void, Error> spawn();
     std::expected<void, Error> handshake();
@@ -140,6 +148,7 @@ private:
         std::string_view method, const std::filesystem::path& abs, Position pos,
         const nlohmann::json& extra = nlohmann::json::object());
 
+    std::mutex io_mtx_;  // see io_mutex(): serialises concurrent tool access
     LspConfig cfg_;
     pid_t pid_ = -1;
     int to_child_ = -1;    // we write clangd's stdin

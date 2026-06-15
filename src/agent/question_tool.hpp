@@ -52,6 +52,10 @@ public:
     void on_request(std::function<void()> fn) { notify_ = std::move(fn); }
 
 private:
+    // Held for the whole of request() so concurrent ask_user calls (tool calls
+    // now run in parallel — see Agent::run) queue behind one another instead of
+    // clobbering the single question slot: one modal is shown at a time.
+    std::mutex serialize_;
     mutable std::mutex m_;
     std::condition_variable cv_;
     std::optional<Question> question_;

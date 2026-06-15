@@ -44,23 +44,38 @@ inline std::string slurp(const std::filesystem::path& p) {
 }
 
 // Load custom system-prompt addendum from MOO.md.
-// Lookup order: <cwd>/MOO.md (project root), then
-// <cwd>/.moo/MOO.md (project-local hidden), then
-// <home>/MOO.md (global ~/.moo/MOO.md). First match wins.
+// When present, both <home>/MOO.md (~/.moo/MOO.md) and <cwd>/MOO.md
+// (PWD/MOO.md) are concatenated: global first, then PWD after.
+// If PWD/MOO.md is missing, <cwd>/.moo/MOO.md serves as fallback.
 // Returns empty when none are present.
 inline std::string load_moocode_md(const std::string& home,
                                    const std::filesystem::path& cwd) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    fs::path root_md = cwd / "MOO.md";
-    if (fs::exists(root_md, ec)) return slurp(root_md);
-    fs::path local = cwd / ".moo" / "MOO.md";
-    if (fs::exists(local, ec)) return slurp(local);
+    std::string result;
+
+    // 1. Global: ~/.moo/MOO.md goes first.
     if (!home.empty()) {
         fs::path global = fs::path(home) / "MOO.md";
-        if (fs::exists(global, ec)) return slurp(global);
+        if (fs::exists(global, ec)) result = slurp(global);
     }
-    return {};
+
+    // 2. Project root: PWD/MOO.md (preferred), or PWD/.moo/MOO.md (fallback).
+    fs::path root_md = cwd / "MOO.md";
+    std::string proj;
+    if (fs::exists(root_md, ec))
+        proj = slurp(root_md);
+    else {
+        fs::path local = cwd / ".moo" / "MOO.md";
+        if (fs::exists(local, ec)) proj = slurp(local);
+    }
+
+    if (!proj.empty()) {
+        if (!result.empty()) result += "\n\n";
+        result += std::move(proj);
+    }
+
+    return result;
 }
 
 }  // namespace moocode

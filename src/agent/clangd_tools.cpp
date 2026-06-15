@@ -10,6 +10,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -97,10 +98,10 @@ std::string format_locations(const nlohmann::json& result, const fs::path& root,
         std::string uri;
         const nlohmann::json* range = nullptr;
         if (loc.contains("uri") && loc.contains("range")) {
-            uri = loc["uri"].get<std::string>();
+            uri = json::get_string_or(loc, "uri");
             range = &loc["range"];
         } else if (loc.contains("targetUri")) {
-            uri = loc["targetUri"].get<std::string>();
+            uri = json::get_string_or(loc, "targetUri");
             range = loc.contains("targetSelectionRange") ? &loc["targetSelectionRange"]
                     : loc.contains("targetRange")        ? &loc["targetRange"]
                                                          : nullptr;
@@ -153,7 +154,8 @@ std::string format_symbol_tree(const nlohmann::json& result) {
             line = read_int(node["selectionRange"]["start"], "line");
         else if (node.contains("range") && node["range"].contains("start"))
             line = read_int(node["range"]["start"], "line");
-        else if (node.contains("location") && node["location"].contains("range"))
+        else if (node.contains("location") && node["location"].contains("range") &&
+                 node["location"]["range"].contains("start"))
             line = read_int(node["location"]["range"]["start"], "line");
         out += std::string(static_cast<std::size_t>(depth) * 2, ' ') +
                symbol_kind_name(kind) + " " + node.value("name", std::string()) + "  (L" +
@@ -215,14 +217,14 @@ std::string format_call_items(const nlohmann::json& result, const char* key,
 std::string format_hover(const nlohmann::json& result) {
     if (!result.is_object() || !result.contains("contents")) return {};
     const auto& c = result["contents"];
-    if (c.is_object() && c.contains("value")) return c["value"].get<std::string>();
+    if (c.is_object() && c.contains("value")) return json::get_string_or(c, "value");
     if (c.is_string()) return c.get<std::string>();
     if (c.is_array()) {
         std::string out;
         for (const auto& part : c) {
             if (part.is_string()) out += part.get<std::string>() + "\n";
             else if (part.is_object() && part.contains("value"))
-                out += part["value"].get<std::string>() + "\n";
+                out += json::get_string_or(part, "value") + "\n";
         }
         return out;
     }
@@ -277,8 +279,8 @@ const char* kPosProps =
 nlohmann::json pos_schema(const std::string& extra_props = {}) {
     std::string props = std::string(kPosProps);
     if (!extra_props.empty()) props += "," + extra_props;
-    return nlohmann::json::parse("{\"type\":\"object\",\"properties\":{" + props +
-                                 "},\"required\":[\"path\",\"line\",\"symbol\"]}");
+    return json::parse_or("{\"type\":\"object\",\"properties\":{" + props +
+                          "},\"required\":[\"path\",\"line\",\"symbol\"]}");
 }
 
 // --- rename: apply a WorkspaceEdit to the working tree ----------------------
@@ -382,6 +384,7 @@ Tool find_references_tool(std::shared_ptr<ClangdSession> session) {
         pos_schema(
             R"SC("include_declaration":{"type":"boolean","description":"also include declaration (default true)"})SC")};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
         bool incl = !a.contains("include_declaration") || !a["include_declaration"].is_boolean() ||
@@ -400,6 +403,7 @@ Tool go_to_definition_tool(std::shared_ptr<ClangdSession> session) {
                   "1-based `line`, `symbol`. Returns defining `path:line:col`.",
                   pos_schema()};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
         auto res = session->definition(loc->abs, loc->pos);
@@ -417,6 +421,7 @@ Tool go_to_implementation_tool(std::shared_ptr<ClangdSession> session) {
                   "`line`, `symbol`. Returns implementing `path:line:col` locations.",
                   pos_schema()};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
         auto res = session->implementation(loc->abs, loc->pos);
@@ -433,6 +438,7 @@ Tool hover_tool(std::shared_ptr<ClangdSession> session) {
                   "clangd (textDocument/hover). Args: `path`, 1-based `line`, `symbol`.",
                   pos_schema()};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
         auto res = session->hover(loc->abs, loc->pos);
@@ -449,12 +455,13 @@ Tool list_symbols_tool(std::shared_ptr<ClangdSession> session) {
         "List C/C++ symbols via clangd. Pass `path` for symbols defined in one "
         "file (indented kind/name/line tree), OR `query` to search symbols across "
         "whole project. Provide exactly one.",
-        nlohmann::json::parse(R"SC({
+        json::parse_or(R"SC({
             "type":"object",
             "properties":{
               "path":{"type":"string","description":"file to list symbols of"},
               "query":{"type":"string","description":"project-wide symbol-name search (empty string lists top-level symbols)"}}})SC")};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         bool has_path = a.contains("path") && a["path"].is_string() &&
                         !a["path"].get<std::string>().empty();
         bool has_query = a.contains("query") && a["query"].is_string();
@@ -497,6 +504,7 @@ Tool call_hierarchy_tool(std::shared_ptr<ClangdSession> session) {
         pos_schema(
             R"SC("direction":{"type":"string","enum":["callers","callees"],"description":"'callers' (incoming) or 'callees' (outgoing); default callers"})SC")};
     return Tool{.spec = std::move(spec), .run = [session](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
         auto prep = session->prepare_call_hierarchy(loc->abs, loc->pos);
@@ -536,6 +544,7 @@ Tool rename_tool(std::shared_ptr<ClangdSession> session, ToolOptions opts) {
     // required becomes [path,line,symbol]; new_name is enforced below.
     return Tool{.spec = std::move(spec),
                 .run = [session, opts](const nlohmann::json& a) -> Result {
+        std::lock_guard lk(session->io_mutex());  // serialise the shared clangd pipe
         auto loc = resolve_pos(*session, a);
         if (!loc) return std::unexpected(loc.error());
         auto new_name = json::get_string(a, "new_name");

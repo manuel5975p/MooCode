@@ -7,6 +7,7 @@
 // or nothing at all) lives outside this layer and toml.hpp stays out of it.
 
 #include <functional>
+#include <mutex>
 #include <set>
 #include <string>
 
@@ -40,6 +41,9 @@ public:
     void grant_always(const std::string& tool);
 
 private:
+    // Guards the two tiers: parallel tool calls (and sibling sub-agents sharing
+    // one policy — see Agent::run) reach allowed()/grant_* concurrently.
+    mutable std::mutex mtx_;
     std::set<std::string> session_;
     std::set<std::string> always_;
     SaveFn save_;

@@ -589,6 +589,8 @@ std::vector<std::string> syntax_theme_names() {
 // --- ApprovalGate -----------------------------------------------------------
 
 Approval ApprovalGate::request(ToolCall tc) {
+    // Serialise concurrent requests: only one approval is in flight at a time.
+    std::lock_guard serial(serialize_);
     std::unique_lock lk(m_);
     if (released_) return Approval::Deny;
     call_ = std::move(tc);
@@ -1579,10 +1581,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
     std::atomic<std::size_t> frame{0};  // spinner tick, advanced off the render path
 
-    // Messages typed while the agent is streaming: enqueued and auto-sent as
-    // the next turn(s) when the current one finishes. @-mention expansion and
-    // image scanning are done at submit time (UI thread); the worker just
-    // calls agent.run() with the pre-expanded data.
+    // Messages typed while the agent is streaming. This is a *buffer*, not a
+    // strict queue: the agent's inject hook flushes the whole buffer into the
+    // very next provider request — including each mid-turn tool-use round-trip,
+    // not just after the turn ends — and the worker flushes anything typed after
+    // the turn's final request as a fresh turn. @-mention expansion and image
+    // scanning are done at submit time (UI thread); the worker / inject hook
+    // just hand agent.run() the pre-expanded data.
     struct QueuedPrompt {
         std::string expanded_prompt;            // after @-mention expansion
         std::vector<ContentPart> user_parts;    // text + images
@@ -1592,10 +1597,66 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         std::vector<ImageBlock> scanned_images; // from scan_image_paths
         std::vector<std::string> scan_errors;   // from scan_image_paths
     };
-    std::deque<QueuedPrompt> pending_queue;  // UI enqueues, worker dequeues
-    // Esc / cancel clears the queue so queued messages don't auto-fire after a
-    // user interrupt. Checked by the worker between turns.
-    bool drain_queue = false;
+    std::deque<QueuedPrompt> pending_queue;  // guarded by state_mtx
+    // Set by Esc: drop the buffer instead of flushing it, so queued messages
+    // never auto-fire after an interrupt. Guarded by state_mtx.
+    bool discard_buffer = false;
+
+    // Mirror a buffered prompt into the chat log exactly as submit() does: the
+    // user line, then the @-mention / image attachment summaries. Used by both
+    // the inject hook (mid-turn flush) and the worker (post-turn flush).
+    // pre: caller holds state_mtx.
+    auto show_buffered = [&](const QueuedPrompt& qp) {
+        state.set_parent_model(info.model);
+        state.push_user(qp.original_line);
+        if (!qp.entries.empty()) {
+            std::size_t ok = 0, err = 0;
+            for (const auto& e : qp.entries) {
+                if (e.error.empty()) ++ok;
+                else ++err;
+            }
+            std::ostringstream ai;
+            ai << "📎 " << ok << " file(s) attached via @-mentions ("
+               << qp.total_bytes << " B, " << err << " error(s))";
+            for (const auto& e : qp.entries) {
+                if (!e.error.empty())
+                    ai << "\n  ! " << e.path << ": " << e.error;
+                else
+                    ai << "\n  · " << e.path << "  (" << e.kind << ", "
+                       << e.lines << " lines)";
+            }
+            state.push_info(ai.str());
+        }
+        if (!qp.scanned_images.empty()) {
+            std::ostringstream si;
+            si << "🖼 " << qp.scanned_images.size()
+               << " image(s) detected in prompt";
+            for (const auto& img : qp.scanned_images)
+                si << "\n  · " << img.media_type << " ("
+                   << human_tokens(static_cast<int>(img.base64_data.size() / 4))
+                   << " tok)";
+            for (const auto& e : qp.scan_errors) si << "\n  ! " << e;
+            state.push_info(si.str());
+        }
+    };
+
+    // Flush the whole buffer into the next provider request. Runs on the worker
+    // thread (inside agent.run); takes state_mtx to read+clear the buffer and to
+    // mirror each prompt into the chat log. Returns nothing once Esc has marked
+    // the buffer for discard.
+    agent.on_inject([&]() -> std::vector<Message> {
+        std::vector<Message> out;
+        std::lock_guard lk(state_mtx);
+        if (discard_buffer) return out;
+        while (!pending_queue.empty()) {
+            QueuedPrompt qp = std::move(pending_queue.front());
+            pending_queue.pop_front();
+            show_buffered(qp);  // reads original_line/entries/images (not moved below)
+            out.push_back(Message::user(std::move(qp.expanded_prompt),
+                                        std::move(qp.user_parts)));
+        }
+        return out;
+    });
 
     // Worker thread: drains submitted work items (prompts and compactions) and
     // runs each so the UI stays responsive. Streaming callbacks (above) push into
@@ -1608,97 +1669,49 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         {
             std::lock_guard lk(state_mtx);
             state.set_running(true);
-            drain_queue = false;  // fresh submit clears any prior Esc
+            discard_buffer = false;  // fresh submit clears any prior Esc
         }
         post();
+
+        // Run the primary prompt. Messages typed *during* the turn are folded
+        // into it by the inject hook (flushed at the next provider request).
+        // After it returns, loop to start a fresh turn for anything typed after
+        // the turn's final request — the tail the inject hook can't reach —
+        // until the buffer drains or Esc clears it.
         auto res = agent.run(text, std::move(user_parts));
-        bool cancelled = agent.cancel_flag().load(std::memory_order_relaxed);
-        {
-            std::lock_guard lk(state_mtx);
-            if (!res) state.push_error("error: " + res.error().msg);
-            // On cancel or error, drain the queue so queued messages don't
-            // auto-fire after a user interrupt or failure.
+        for (;;) {
+            const bool cancelled =
+                agent.cancel_flag().load(std::memory_order_relaxed);
             if (cancelled || !res) {
-                pending_queue.clear();
-                drain_queue = false;
-                state.set_running(false);
-                save_now();
+                {
+                    std::lock_guard lk(state_mtx);
+                    if (!res) state.push_error("error: " + res.error().msg);
+                    // Interrupt or error: drop the buffer so queued messages
+                    // don't auto-fire after the failure.
+                    pending_queue.clear();
+                    discard_buffer = false;
+                    state.set_running(false);
+                }
+                save_now();  // outside the lock: save_now() takes state_mtx
                 post();
                 return;
             }
-        }
-        save_now();  // persist the turn (no UI race: history is settled)
+            save_now();  // persist the completed turn (history is settled)
 
-        // Process any messages queued while this turn was streaming.
-        for (;;) {
             QueuedPrompt qp;
             {
                 std::lock_guard lk(state_mtx);
-                if (drain_queue || pending_queue.empty()) {
+                if (discard_buffer || pending_queue.empty()) {
                     state.set_running(false);
                     break;
                 }
                 qp = std::move(pending_queue.front());
                 pending_queue.pop_front();
-
-                state.set_parent_model(info.model);
-                state.push_user(qp.original_line);
-                // Show attachment info the same way submit() does.
-                if (!qp.entries.empty()) {
-                    std::size_t ok = 0, err = 0;
-                    for (const auto& e : qp.entries) {
-                        if (e.error.empty()) ++ok;
-                        else ++err;
-                    }
-                    std::ostringstream ai;
-                    ai << "📎 " << ok << " file(s) attached via @-mentions ("
-                       << qp.total_bytes << " B, " << err << " error(s))";
-                    for (const auto& e : qp.entries) {
-                        if (!e.error.empty())
-                            ai << "\n  ! " << e.path << ": " << e.error;
-                        else
-                            ai << "\n  · " << e.path << "  (" << e.kind << ", "
-                               << e.lines << " lines)";
-                    }
-                    state.push_info(ai.str());
-                }
-                if (!qp.scanned_images.empty()) {
-                    std::ostringstream si;
-                    si << "🖼 " << qp.scanned_images.size()
-                       << " image(s) detected in prompt";
-                    for (const auto& img : qp.scanned_images)
-                        si << "\n  · " << img.media_type << " ("
-                           << human_tokens(
-                                  static_cast<int>(img.base64_data.size() / 4))
-                           << " tok)";
-                    for (const auto& e : qp.scan_errors)
-                        si << "\n  ! " << e;
-                    state.push_info(si.str());
-                }
-                // Remaining-queue count, so the user sees the backlog shrinking.
-                if (!pending_queue.empty()) {
-                    std::ostringstream ri;
-                    ri << "⏳ " << pending_queue.size() << " more queued";
-                    state.push_info(ri.str());
-                }
+                show_buffered(qp);
             }
             post();
-            res = agent.run(qp.expanded_prompt, std::move(qp.user_parts));
-            cancelled = agent.cancel_flag().load(std::memory_order_relaxed);
-            {
-                std::lock_guard lk(state_mtx);
-                if (!res) state.push_error("error: " + res.error().msg);
-                if (cancelled || !res) {
-                    pending_queue.clear();
-                    drain_queue = false;
-                    state.set_running(false);
-                    save_now();
-                    post();
-                    return;
-                }
-            }
-            save_now();
-            post();
+            res = agent.run(std::move(qp.expanded_prompt),
+                            std::move(qp.user_parts));
         }
         post();
     };
@@ -2600,9 +2613,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         append_history(hist_path, line);
 
         if (busy) {
-            // Agent is mid-turn: enqueue for the next turn(s). The worker
-            // dequeues and runs each in FIFO order after the current turn
-            // finishes. Queued messages never start a new conversation file
+            // Agent is mid-turn: buffer the message. The inject hook flushes the
+            // whole buffer into the next provider request (the next tool round
+            // or, failing that, a fresh turn), so it rides along as soon as the
+            // API is called again — it is never held back to a strict per-turn
+            // queue. Buffered messages never start a new conversation file
             // (conv_path is already minted by the first non-busy submit).
             QueuedPrompt qp;
             qp.expanded_prompt = std::move(expansion.prompt);
@@ -2626,8 +2641,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 }
                 pending_queue.push_back(std::move(qp));
                 std::ostringstream qi;
-                qi << "⏳ queued (" << pending_queue.size() << " ahead): \""
-                   << preview << "\"";
+                qi << "⏳ buffered (" << pending_queue.size()
+                   << " pending, sent at next request): \"" << preview << "\"";
                 state.push_info(qi.str());
             }
             clear_input();
@@ -2637,6 +2652,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
         {
             std::lock_guard lk(state_mtx);
+            // Mark running here, on the UI thread, before the worker picks the
+            // item up — otherwise a second submit in the gap before the worker
+            // sets it would read busy==false and start a second turn instead of
+            // buffering. The worker re-asserts it (idempotent).
+            state.set_running(true);
+            discard_buffer = false;  // a fresh, non-busy submit isn't an interrupt
             // The live model is the fallback for any spawn_subagent group this
             // turn opens without an explicit "model" arg. The model only changes
             // while idle, so stamping it at submit time is always current.
@@ -3777,9 +3798,20 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         // Escape while the agent is running: interrupt the streaming LLM call.
         if (e == Event::Escape) {
             bool running;
-            { std::lock_guard lk(state_mtx); running = state.running(); }
+            {
+                std::lock_guard lk(state_mtx);
+                running = state.running();
+                if (running) {
+                    // Drop the buffer now, under the lock, and latch the discard
+                    // flag so an in-flight inject() / the worker's tail loop
+                    // won't flush anything typed before the interrupt. Both the
+                    // flag and the buffer are state_mtx-guarded — writing them
+                    // here without the lock is a data race with the worker.
+                    pending_queue.clear();
+                    discard_buffer = true;
+                }
+            }
             if (running) {
-                drain_queue = true;  // also drop any queued messages
                 agent.cancel();
                 return true;
             }

@@ -182,6 +182,39 @@ TEST("build_messages_request: tool results coalesced into one user message") {
     CHECK_EQ(tr["content"][1]["is_error"], true);
 }
 
+// A prompt buffered mid-turn lands as a user message right after the tool-result
+// user turn; it must be folded into that one turn (tool_result + text blocks),
+// never sent as a second back-to-back user message.
+TEST("build_messages_request: buffered user message merged into tool-result turn") {
+    std::vector<ToolCall> a_calls;
+    a_calls.push_back({"tu_1", "a", "{}"});
+    Message a = Message::assistant("", std::move(a_calls));
+    Conversation c{Message::user("hi"), a, Message::tool("tu_1", "result one"),
+                   Message::user("and also do this")};
+    auto req = build_messages_request(cfg(), c, {});
+    // user, assistant, user(tool_result + text) => 3 messages, no consecutive user.
+    CHECK_EQ(req["messages"].size(), size_t{3});
+    auto& m = req["messages"][2];
+    CHECK_EQ(m["role"], std::string("user"));
+    CHECK_EQ(m["content"].size(), size_t{2});
+    CHECK_EQ(m["content"][0]["type"], std::string("tool_result"));
+    CHECK_EQ(m["content"][1]["type"], std::string("text"));
+    CHECK_EQ(m["content"][1]["text"], std::string("and also do this"));
+}
+
+// Two plain user turns (e.g. a buffer flushed before the first request) merge
+// into one turn whose content is the two text blocks.
+TEST("build_messages_request: consecutive user messages merged into one turn") {
+    Conversation c{Message::user("first"), Message::user("second")};
+    auto req = build_messages_request(cfg(), c, {});
+    CHECK_EQ(req["messages"].size(), size_t{1});
+    auto& m = req["messages"][0];
+    CHECK_EQ(m["role"], std::string("user"));
+    CHECK_EQ(m["content"].size(), size_t{2});
+    CHECK_EQ(m["content"][0]["text"], std::string("first"));
+    CHECK_EQ(m["content"][1]["text"], std::string("second"));
+}
+
 // is_error follows the typed tool_failed bit, NOT the content prefix: a tool
 // that succeeded but whose text begins with "ERROR:" must carry no is_error.
 TEST("build_messages_request: is_error follows tool_failed, not content") {

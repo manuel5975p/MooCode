@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "agent/agent.hpp"
+#include "agent/json_util.hpp"
 #include "agent/provider.hpp"
 #include "agent/strutil.hpp"
 #include "agent/tools.hpp"
@@ -60,7 +61,7 @@ ToolRegistry build_sub_registry(const ToolRegistry& parent) {
 }  // namespace
 
 Tool spawn_subagent_tool(SubagentConfig cfg) {
-    nlohmann::json params = nlohmann::json::parse(R"({
+    nlohmann::json params = json::parse_or(R"({
         "type":"object",
         "properties":{
           "prompt":{

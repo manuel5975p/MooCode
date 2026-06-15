@@ -1,5 +1,9 @@
 #include "agent/agent.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -460,4 +464,92 @@ TEST("run: on_usage fires with the turn's reported usage") {
     auto r = agent.run("go");
     CHECK(r.has_value());
     CHECK_EQ(total, 14);
+}
+
+// The inject hook is polled before every provider request, so a message
+// buffered mid-turn rides the *next* request rather than waiting for the turn
+// to end. Returning the message on the second poll (i.e. after the first tool
+// round) proves it lands in the follow-up request, not the first.
+TEST("run: inject hook flushes buffered messages into the next request") {
+    FakeProvider p;
+    Turn t1;
+    t1.tool_calls.push_back(call("c1", "echo", "{}"));
+    p.script.push_back(t1);
+    p.script.push_back(Turn{.text = "done", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+    ToolRegistry reg;
+    reg.add(ok_tool("echo", "ok"));
+    Agent agent(p, reg, AgentConfig{});
+    int polls = 0;
+    agent.on_inject([&]() -> std::vector<Message> {
+        if (++polls == 2) return {Message::user("BUFFERED")};
+        return {};
+    });
+    auto r = agent.run("start");
+    CHECK(r.has_value());
+    // Two requests were made; the first must NOT carry the buffered message, the
+    // second must, as its final user turn.
+    CHECK(p.seen.size() == size_t{2});
+    if (p.seen.size() == 2) {
+        bool in_first = false;
+        for (const auto& m : p.seen[0])
+            if (m.content() == "BUFFERED") in_first = true;
+        CHECK(!in_first);
+        const auto& second = p.seen[1];
+        CHECK(!second.empty());
+        if (!second.empty()) {
+            CHECK(second.back().role() == Role::User);
+            CHECK_EQ(second.back().content(), std::string("BUFFERED"));
+        }
+    }
+}
+
+// Several tool calls in one turn run on their own threads in parallel. Each tool
+// blocks until all three have entered, with a timeout: under real concurrency
+// every call observes the full count and returns ":together"; were they run
+// serially the first would wait alone, time out, and return ":alone". Results
+// are appended in request order regardless.
+TEST("run: tool calls in one turn run concurrently, results stay ordered") {
+    FakeProvider p;
+    Turn t1;
+    t1.tool_calls.push_back(call("c1", "t1", "{}"));
+    t1.tool_calls.push_back(call("c2", "t2", "{}"));
+    t1.tool_calls.push_back(call("c3", "t3", "{}"));
+    p.script.push_back(t1);
+    p.script.push_back(Turn{.text = "done", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+
+    std::mutex m;
+    std::condition_variable cv;
+    int started = 0;
+    auto barrier_tool = [&](std::string name) {
+        return Tool{
+            .spec = ToolSpec{.name = name, .description = "",
+                             .parameters = nlohmann::json::object()},
+            .run = [&, name](const nlohmann::json&) -> std::expected<std::string, Error> {
+                std::unique_lock lk(m);
+                ++started;
+                cv.notify_all();
+                bool all = cv.wait_for(lk, std::chrono::seconds(3),
+                                       [&] { return started == 3; });
+                return name + (all ? ":together" : ":alone");
+            }};
+    };
+    ToolRegistry reg;
+    reg.add(barrier_tool("t1"));
+    reg.add(barrier_tool("t2"));
+    reg.add(barrier_tool("t3"));
+    Agent agent(p, reg, AgentConfig{});
+    auto r = agent.run("go");
+    CHECK(r.has_value());
+    const auto& h = agent.history();
+    // no system prompt => user, assistant(3 calls), tool c1, c2, c3, assistant.
+    CHECK_EQ(h.size(), size_t{6});
+    if (h.size() == 6) {
+        CHECK_EQ(h[1].tool_calls().size(), size_t{3});
+        CHECK_EQ(h[2].tool_call_id(), std::string("c1"));
+        CHECK_EQ(h[2].content(), std::string("t1:together"));
+        CHECK_EQ(h[3].tool_call_id(), std::string("c2"));
+        CHECK_EQ(h[3].content(), std::string("t2:together"));
+        CHECK_EQ(h[4].tool_call_id(), std::string("c3"));
+        CHECK_EQ(h[4].content(), std::string("t3:together"));
+    }
 }

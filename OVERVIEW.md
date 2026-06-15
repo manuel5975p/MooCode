@@ -156,7 +156,7 @@ test_compact_cancel
 Run: `ctest --test-dir build --output-on-failure`
 
 CI presets (via `CMakePresets.json`):
-- `dev` — RelWithDebInfo, `MOOCODE_WERROR=ON`
+- `dev` — Release, `MOOCODE_WERROR=ON`
 - `asan` — Debug, `MOOCODE_SANITIZE=address;undefined`
 - `tsan` — Debug, `MOOCODE_SANITIZE=thread`
 

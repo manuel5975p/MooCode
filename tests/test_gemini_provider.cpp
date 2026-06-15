@@ -190,6 +190,32 @@ TEST("build_generate_request: consecutive tool results coalesced into one user c
     CHECK_EQ(parts[1]["functionResponse"]["name"], std::string("fb"));
 }
 
+// Gemini demands strictly alternating user/model turns. A prompt buffered
+// mid-turn lands as a user turn right after the functionResponse user turn, so
+// it must merge into one user content (functionResponse + text parts).
+TEST("build_generate_request: buffered user message merged after tool-result turn") {
+    ToolCall a{.id = "a", .name = "fa", .arguments_json = "{}"};
+    Conversation c{Message::user("hi"), Message::assistant("", {a}),
+        Message::tool("a", "ra"), Message::user("more")};
+    auto req = build_generate_request(cfg(), c, {});
+    CHECK_EQ(req["contents"].size(), size_t{3});  // user, model, user(2 parts)
+    auto& parts = req["contents"][2]["parts"];
+    CHECK_EQ(req["contents"][2]["role"], std::string("user"));
+    CHECK_EQ(parts.size(), size_t{2});
+    CHECK(parts[0].contains("functionResponse"));
+    CHECK_EQ(parts[1]["text"], std::string("more"));
+}
+
+TEST("build_generate_request: consecutive user messages merged into one content") {
+    Conversation c{Message::user("a"), Message::user("b")};
+    auto req = build_generate_request(cfg(), c, {});
+    CHECK_EQ(req["contents"].size(), size_t{1});
+    CHECK_EQ(req["contents"][0]["role"], std::string("user"));
+    CHECK_EQ(req["contents"][0]["parts"].size(), size_t{2});
+    CHECK_EQ(req["contents"][0]["parts"][0]["text"], std::string("a"));
+    CHECK_EQ(req["contents"][0]["parts"][1]["text"], std::string("b"));
+}
+
 TEST("build_generate_request: thinking on => thinkingConfig with budget") {
     GeminiConfig c = cfg();
     c.thinking = true;

@@ -63,6 +63,31 @@ TEST("build_chat_request: tool-role message carries tool_call_id") {
     CHECK_EQ(msg["content"], std::string("file contents"));
 }
 
+// A tool-role message keeps its own turn (role "tool"), so a user prompt
+// buffered after it is a valid continuation and must NOT be merged into it.
+TEST("build_chat_request: user after tool-role message is not merged") {
+    Conversation c{Message::user("hi"), Message::tool("call_1", "out"),
+                   Message::user("more")};
+    auto req = build_chat_request(cfg(), c, {});
+    CHECK_EQ(req["messages"].size(), size_t{3});
+    CHECK_EQ(req["messages"][1]["role"], std::string("tool"));
+    CHECK_EQ(req["messages"][2]["role"], std::string("user"));
+    CHECK_EQ(req["messages"][2]["content"], std::string("more"));
+}
+
+// Two consecutive user turns (e.g. a buffer flushed before the first request)
+// merge into one message whose content is the two text blocks.
+TEST("build_chat_request: consecutive user messages merged into one") {
+    Conversation c{Message::user("first"), Message::user("second")};
+    auto req = build_chat_request(cfg(), c, {});
+    CHECK_EQ(req["messages"].size(), size_t{1});
+    auto& m = req["messages"][0];
+    CHECK_EQ(m["role"], std::string("user"));
+    CHECK_EQ(m["content"].size(), size_t{2});
+    CHECK_EQ(m["content"][0]["text"], std::string("first"));
+    CHECK_EQ(m["content"][1]["text"], std::string("second"));
+}
+
 TEST("build_chat_request: tools advertised as function specs") {
     std::vector<ToolSpec> tools;
     tools.push_back({"read_file", "read a file",

@@ -14,6 +14,8 @@ namespace moocode {
 
 std::optional<std::string> QuestionGate::request(std::string question,
                                                   std::vector<std::string> options) {
+    // Serialise concurrent requests: only one question is in flight at a time.
+    std::lock_guard serial(serialize_);
     std::unique_lock lk(m_);
     if (released_) return std::nullopt;
     question_ = Question{std::move(question), std::move(options)};
@@ -85,7 +87,7 @@ Tool ask_user_tool(QuestionGate* gate) {
         "dismiss (Esc). On dismiss, tool returns \"USER_HALTED\" — "
         "continue without an answer. Use when genuinely uncertain and "
         "need user to decide — do not ask things you can determine yourself.",
-        nlohmann::json::parse(R"({
+        json::parse_or(R"({
             "type":"object",
             "properties":{
               "question":{

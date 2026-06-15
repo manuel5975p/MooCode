@@ -40,6 +40,38 @@ nlohmann::json assistant_content(const Message& m) {
     return blocks;
 }
 
+// Promote a message's "content" (a string or an array of blocks) to an array of
+// content blocks so two turns can be concatenated. An empty string yields no
+// blocks. pre: c is a string or array.
+nlohmann::json content_blocks(const nlohmann::json& c) {
+    if (c.is_array()) return c;
+    nlohmann::json blocks = nlohmann::json::array();
+    if (c.is_string() && !c.get<std::string>().empty())
+        blocks.push_back({{"type", "text"}, {"text", c}});
+    return blocks;
+}
+
+// Merge consecutive "user" messages into one turn. A prompt buffered mid-turn
+// is appended right after the tool-result user turn, so without this the wire
+// would carry back-to-back user messages; Anthropic expects one user turn,
+// carrying tool_result and text blocks together. Assistant turns never abut and
+// are left untouched.
+void merge_consecutive_user(nlohmann::json& messages) {
+    nlohmann::json out = nlohmann::json::array();
+    for (auto& m : messages) {
+        if (!out.empty() && out.back().value("role", "") == "user" &&
+            m.value("role", "") == "user") {
+            nlohmann::json blocks = content_blocks(out.back()["content"]);
+            for (auto& b : content_blocks(m["content"]))
+                blocks.push_back(std::move(b));
+            out.back()["content"] = std::move(blocks);
+        } else {
+            out.push_back(std::move(m));
+        }
+    }
+    messages = std::move(out);
+}
+
 }  // namespace
 
 std::string effort_to_output_effort(std::string_view effort) {
@@ -215,6 +247,7 @@ nlohmann::json build_messages_request(const AnthropicConfig& cfg,
         }
         ++i;
     }
+    merge_consecutive_user(messages);
     req["messages"] = std::move(messages);
 
     if (!tools.empty()) {
@@ -236,7 +269,8 @@ nlohmann::json build_messages_request(const AnthropicConfig& cfg,
                     for (auto& blk : msg["content"])
                         if (blk.value("type", std::string{}) == "image" &&
                             blk.contains("source") &&
-                            blk["source"].contains("data"))
+                            blk["source"].contains("data") &&
+                            blk["source"]["data"].is_string())
                             blk["source"]["data"] =
                                 "<base64 " +
                                 std::to_string(
@@ -374,7 +408,8 @@ std::expected<std::vector<std::string>, Error> AnthropicProvider::list_models() 
             .code = static_cast<int>(resp->status)});
     }
     // Anthropic's /v1/models uses the same {data:[{id:…}]} shape as OpenAI.
-    return parse_model_ids(*parsed);
+    return json::guard_or([&] { return parse_model_ids(*parsed); },
+                          std::vector<std::string>{});
 }
 
 std::expected<Turn, Error> AnthropicProvider::complete(
@@ -393,7 +428,8 @@ std::expected<Turn, Error> AnthropicProvider::complete(
             .code = static_cast<int>(resp->status)});
     }
 
-    auto turn = parse_messages_response(*parsed);
+    auto turn = json::guard("anthropic response",
+                            [&] { return parse_messages_response(*parsed); });
     if (!turn) {
         if (resp->status < 200 || resp->status >= 300)
             return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
@@ -424,7 +460,8 @@ std::expected<Turn, Error> AnthropicProvider::complete_stream(
         for (const auto& ev : events) {
             auto parsed = json::parse(ev);
             if (!parsed) continue;  // skip a malformed event, keep streaming
-            AnthropicStreamAccumulator::Added a = acc.ingest(*parsed);
+            AnthropicStreamAccumulator::Added a = json::guard_or(
+                [&] { return acc.ingest(*parsed); }, AnthropicStreamAccumulator::Added{});
             if (on_delta && (!a.answer.empty() || !a.reasoning.empty()))
                 on_delta(a.answer, a.reasoning);
         }
@@ -438,8 +475,9 @@ std::expected<Turn, Error> AnthropicProvider::complete_stream(
     if (*status < 200 || *status >= 300) {
         std::string detail;
         if (auto parsed = json::parse(raw); parsed) {
-            if (auto err = parse_messages_response(*parsed); !err)
-                detail = err.error().msg;
+            auto err = json::guard("anthropic response",
+                                   [&] { return parse_messages_response(*parsed); });
+            if (!err) detail = err.error().msg;
         }
         if (detail.empty()) detail = raw.substr(0, 200);
         return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " +

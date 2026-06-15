@@ -67,6 +67,17 @@ public:
     using UsageFn = std::function<void(const Usage&)>;
     void on_usage(UsageFn fn);
 
+    // Called right before every provider request (including each mid-turn
+    // tool-use round-trip) to pull any user messages the caller buffered while
+    // the turn was in flight. The returned messages are appended to the
+    // conversation so they ride the very next API call rather than waiting for
+    // the turn to finish — the "flush the whole buffer at the next opportunity"
+    // semantics the TUI wants. Returns empty when nothing is buffered. Runs on
+    // the same thread as run(). Optional; installed only on the interactive
+    // (top-level) agent, never on sub-agents.
+    using InjectFn = std::function<std::vector<Message>()>;
+    void on_inject(InjectFn fn);
+
     // Cancel plumbing: expose the internal flag so a sub-agent can poll the
     // parent's cancellation (one Esc aborts both). Thread-safe.
     const std::atomic<bool>& cancel_flag() const { return cancel_; }
@@ -151,6 +162,7 @@ private:
     StreamFn on_delta_;
     ApprovalFn approve_;
     UsageFn on_usage_;
+    InjectFn inject_;
     std::atomic<bool> cancel_{false};
     const std::atomic<bool>* watch_cancel_ = nullptr;
 

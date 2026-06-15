@@ -3,7 +3,9 @@
 #include <climits>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #include "agent/json_util.hpp"
 #include "agent/strutil.hpp"
@@ -138,6 +140,8 @@ void Agent::cancel() { cancel_.store(true, std::memory_order_release); }
 
 void Agent::on_usage(UsageFn fn) { on_usage_ = std::move(fn); }
 
+void Agent::on_inject(InjectFn fn) { inject_ = std::move(fn); }
+
 void Agent::append(Message m) {
     conv_.push_back(std::move(m));
     if (on_message_) on_message_(conv_.back());
@@ -163,6 +167,15 @@ std::expected<std::string, Error> Agent::run(std::string user_prompt,
         if (cancel_.load(std::memory_order_acquire) ||
             (watch_cancel_ && watch_cancel_->load(std::memory_order_acquire)))
             return std::unexpected(Error{.msg = "interrupted by user", .code = 0});
+        // Flush any messages the caller buffered while this turn was streaming
+        // so they ride *this* request, not a later turn. Done after the cancel
+        // check so an interrupt drops the buffer instead of sending it. The
+        // hook is responsible for not returning anything once the buffer has
+        // been cancelled (Esc). Appended user messages may sit right after a
+        // tool-result turn — providers coalesce consecutive same-role messages,
+        // so the wire format stays valid.
+        if (inject_)
+            for (auto& m : inject_()) append(std::move(m));
         // When a watched source is set it supersedes the local flag — the
         // sub-agent never calls its own cancel(), only the parent flag is set
         // via Esc. This ensures Esc also aborts in-flight HTTP requests.
@@ -182,37 +195,77 @@ std::expected<std::string, Error> Agent::run(std::string user_prompt,
 
         if (turn->tool_calls.empty()) return turn->text;  // model is done
 
-        for (const auto& tc : turn->tool_calls) {
-            std::string result;
+        // Tool calls in one turn run concurrently — each on its own thread — so
+        // independent work (notably several spawn_subagent calls) executes in
+        // parallel instead of serialising. Approval and argument parsing run
+        // first, sequentially, on this thread: that keeps the approval modal
+        // interactive and ordered (one at a time), avoids racing the permission
+        // policy, and means only the tool *bodies* run in parallel. Results are
+        // appended in request order so tool_use/tool_result pairing and history
+        // stay deterministic. Tools must therefore be thread-safe — HTTP, the
+        // providers, and the clangd session already serialise their shared state
+        // (see tools.hpp).
+        const std::size_t n = turn->tool_calls.size();
+        struct Slot {
+            nlohmann::json args;  // parsed args to invoke with (when !decided)
+            std::string result;   // final result text (when decided, or post-run)
             bool failed = false;
+            bool decided = false;  // result already final; skip invocation
+        };
+        std::vector<Slot> slots(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const ToolCall& tc = turn->tool_calls[i];
             if (approve_ && !approve_(tc)) {
-                result = "ERROR: user declined to run " + tc.name;
-                failed = true;
-            } else {
-                // Empty args string is common shorthand for "{}".
-                std::string raw = tc.arguments_json.empty() ? "{}" : tc.arguments_json;
-                auto args = json::parse(raw);
-                if (!args) {
-                    result =
-                        "ERROR: could not parse arguments as JSON: " + args.error().msg;
-                    failed = true;
-                } else {
-                    auto out = tools_.invoke(tc.name, *args);
-                    if (out) {
-                        result = *out;
-                    } else {
-                        result = "ERROR: " + out.error().msg;
-                        failed = true;
-                    }
-                }
+                slots[i].result = "ERROR: user declined to run " + tc.name;
+                slots[i].failed = true;
+                slots[i].decided = true;
+                continue;
             }
+            // Empty args string is common shorthand for "{}".
+            std::string raw = tc.arguments_json.empty() ? "{}" : tc.arguments_json;
+            auto args = json::parse(raw);
+            if (!args) {
+                slots[i].result =
+                    "ERROR: could not parse arguments as JSON: " + args.error().msg;
+                slots[i].failed = true;
+                slots[i].decided = true;
+                continue;
+            }
+            slots[i].args = std::move(*args);
+        }
+
+        // Each invocation writes only its own slot, so the vector is shared
+        // without locking. A single ready call runs inline (no thread overhead;
+        // the overwhelmingly common case stays identical to the serial path).
+        auto invoke_slot = [&](std::size_t i) {
+            auto out = tools_.invoke(turn->tool_calls[i].name, slots[i].args);
+            if (out) {
+                slots[i].result = std::move(*out);
+            } else {
+                slots[i].result = "ERROR: " + out.error().msg;
+                slots[i].failed = true;
+            }
+        };
+        std::vector<std::size_t> ready;
+        for (std::size_t i = 0; i < n; ++i)
+            if (!slots[i].decided) ready.push_back(i);
+        if (ready.size() <= 1) {
+            for (std::size_t i : ready) invoke_slot(i);
+        } else {
+            std::vector<std::thread> pool;
+            pool.reserve(ready.size());
+            for (std::size_t i : ready) pool.emplace_back(invoke_slot, i);
+            for (auto& t : pool) t.join();
+        }
+
+        for (std::size_t i = 0; i < n; ++i) {
             // Failure is recorded as data here (the truth is known now); the
             // "ERROR: " prefix is kept only as context for the model/human.
             append(Message::tool(
-                tc.id,
-                truncate(std::move(result), config_.max_tool_output,
+                turn->tool_calls[i].id,
+                truncate(std::move(slots[i].result), config_.max_tool_output,
                          default_trunc_marker),
-                failed));
+                slots[i].failed));
         }
     }
     // Only reached when a cap is set (an uncapped loop never exits here).

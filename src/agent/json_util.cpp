@@ -37,6 +37,18 @@ std::expected<nlohmann::json, Error> parse(std::string_view text) {
     return v;
 }
 
+nlohmann::json parse_or(std::string_view text, nlohmann::json fallback) {
+    auto v = nlohmann::json::parse(text, /*cb=*/nullptr, /*allow_exceptions=*/false);
+    if (v.is_discarded()) return fallback;
+    return v;
+}
+
+const nlohmann::json* find(const nlohmann::json& value, std::string_view key) {
+    if (!value.is_object()) return nullptr;
+    auto it = value.find(std::string(key));
+    return it == value.end() ? nullptr : &*it;
+}
+
 std::string dump(const nlohmann::json& value) { return value.dump(); }
 
 std::string dump_pretty(const nlohmann::json& value) { return value.dump(2); }

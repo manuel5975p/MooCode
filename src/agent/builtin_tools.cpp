@@ -73,7 +73,7 @@ Tool read_file_tool(ToolOptions opts) {
         "Read file contents. `offset` (1-based start line) + `lines` (max "
         "lines) read that window; omit both for whole file. Sandboxed to "
         "project root; big reads truncated with marker.",
-        nlohmann::json::parse(R"({
+        json::parse_or(R"({
             "type":"object",
             "properties":{
               "path":{"type":"string","description":"file path"},
@@ -122,7 +122,7 @@ Tool write_file_tool(ToolOptions opts) {
         "write_file",
         "Create or overwrite file with `content`. Sandboxed to project root; "
         "parent dirs created.",
-        nlohmann::json::parse(R"({
+        json::parse_or(R"({
             "type":"object",
             "properties":{
               "path":{"type":"string"},
@@ -175,7 +175,7 @@ Tool edit_file_tool(ToolOptions opts) {
         "edit_file",
         "Replace text `old` with `new` in file. `old` must occur exactly "
         "once, else no change + error. Sandboxed to project root.",
-        nlohmann::json::parse(R"({
+        json::parse_or(R"({
             "type":"object",
             "properties":{
               "path":{"type":"string"},
@@ -236,7 +236,7 @@ Tool list_dir_tool(ToolOptions opts) {
         "list_dir",
         "List dir entries, sorted, trailing / on subdirs. Sandboxed to "
         "project root.",
-        nlohmann::json::parse(R"({
+        json::parse_or(R"({
             "type":"object",
             "properties":{"path":{"type":"string","description":"directory path"}},
             "required":["path"]})")};
@@ -292,7 +292,7 @@ Tool run_bash_tool(ToolOptions opts) {
         "`max_bytes` + `max_lines` set output cap — defaults: 1 MiB, unlimited "
         "lines. Prefer git_* tools over `git` here; they return compact, "
         "token-optimized output.",
-        nlohmann::json::parse(R"json({
+        json::parse_or(R"json({
             "type":"object",
             "properties":{
               "cmd":{"type":"string","description":"shell command"},
