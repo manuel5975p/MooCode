@@ -36,6 +36,8 @@ struct Profile {
     std::string base_url;
     std::string model;                // default model when this profile is selected
     std::vector<std::string> models;  // models this provider serves (/model lookup + autocomplete)
+    int thinking = -1;                // -1 => unset (use global default), 0 => off, 1 => on
+    bool drop_thinking_tag = false;   // omit the thinking field entirely (for endpoints that reject it)
 };
 
 // Built-in profiles matching the former hardcoded model_registry, used when no

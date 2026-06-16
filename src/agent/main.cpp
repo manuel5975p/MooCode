@@ -737,8 +737,19 @@ int main(int argc, char** argv) {
         gp.thinking = false;
     else if (!gp.thinking.has_value() && settings.thinking >= 0)
         gp.thinking = settings.thinking != 0;
+    // Profile thinking: the active profile's thinking setting is the default
+    // when the user hasn't set thinking via flags or global settings. This lets
+    // each profile opt out of thinking for endpoints that don't support it.
+    if (!gp.thinking.has_value() && profile && profile->thinking >= 0)
+        gp.thinking = profile->thinking != 0;
+    // Profile can suppress the thinking field entirely (for endpoints that
+    // reject even thinking:{type:disabled}). This leaves gp.thinking nullopt so
+    // providers omit the key from the request.
+    if (!gp.thinking.has_value() && profile && profile->drop_thinking_tag)
+        ; // leave nullopt
     // Default thinking ON when nothing explicitly configured.
-    if (!gp.thinking.has_value()) gp.thinking = true;
+    else if (!gp.thinking.has_value())
+        gp.thinking = true;
     if (max_tokens > 0) gp.max_tokens = max_tokens;
 
     // Build the backend by wire format via the shared factory (single source of

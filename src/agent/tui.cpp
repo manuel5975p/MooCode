@@ -10,10 +10,13 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <queue>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 
 #ifndef _WIN32
 #include <fcntl.h>   // open (OSC 52 clipboard write to /dev/tty)
@@ -164,6 +167,41 @@ std::string describe_key(const ftxui::Event& e) {
     }
     const char* kind = e.is_character() ? "chr" : "spc";
     return std::string(kind) + " [" + readable + "] " + hex;
+}
+
+// Parse a kitty keyboard-protocol "CSI u" key report: ESC [ <codepoint> [;
+// <modifiers>] u — e.g. "\x1B[13;2u" is Shift+Enter. Returns {codepoint,
+// modifiers}; modifiers is the protocol's 1 + bitmask form (1 == no modifier,
+// bit 0 Shift, bit 1 Alt, bit 2 Ctrl). nullopt when `s` is not that exact
+// shape, so it doubles as the discriminator (legacy keys never match). A
+// ":event-type" suffix on the modifier field (release/repeat reports) is
+// ignored. Pure.
+std::optional<std::pair<int, int>> parse_kitty_key(std::string_view s) {
+    if (s.size() < 4 || s[0] != '\x1B' || s[1] != '[' || s.back() != 'u')
+        return std::nullopt;
+    const std::string_view body = s.substr(2, s.size() - 3);  // between '[' and 'u'
+    auto to_int = [](std::string_view t, int& out) {
+        if (t.empty()) return false;
+        int v = 0;
+        for (char c : t) {
+            if (c < '0' || c > '9') return false;
+            v = v * 10 + (c - '0');
+        }
+        out = v;
+        return true;
+    };
+    int codepoint = 0;
+    int modifiers = 1;
+    const std::size_t semi = body.find(';');
+    if (semi == std::string_view::npos)
+        return to_int(body, codepoint) ? std::optional{std::pair{codepoint, modifiers}}
+                                       : std::nullopt;
+    if (!to_int(body.substr(0, semi), codepoint)) return std::nullopt;
+    std::string_view mods = body.substr(semi + 1);
+    if (const std::size_t colon = mods.find(':'); colon != std::string_view::npos)
+        mods = mods.substr(0, colon);  // drop the event-type sub-parameter
+    if (!to_int(mods, modifiers)) return std::nullopt;
+    return std::pair{codepoint, modifiers};
 }
 
 // Mask an API key for display: "sk-…<last4>" (or "(none)" / "(set)" for short
@@ -2857,7 +2895,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     InputOption iopt;
     iopt.content = &input_content;
     iopt.cursor_position = &cursor_pos;
-    iopt.placeholder = glyphify("ask moocode…  (/exit quit · @ attach · Shift+Enter newline · Ctrl+V paste img)");
+    iopt.placeholder = glyphify("ask moocode…  (/exit quit · @ attach · Alt/Shift/Ctrl+Enter newline · Ctrl+V paste img)");
     iopt.multiline = false;
     iopt.on_change = [&] {
         refresh_complete();
@@ -2900,6 +2938,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     bool follow_act = false;
     HitMap hits;  // last rendered frame's row hitboxes (UI thread only)
     std::optional<NodeKey> last_detail;  // detail target; scroll resets on change
+    // The kitty keyboard protocol keeps a separate flag stack for the main and
+    // alternate screens, so the push must happen *after* FTXUI has switched to
+    // the alt screen (in screen.Loop's Install) — pushing it before the loop
+    // lands on the main screen and never reaches the app. Done once, from the
+    // first render (UI thread, alt screen already active). The alt screen's
+    // stack is discarded by the terminal on exit, so no in-loop pop is needed.
+    bool kitty_pushed = false;
 
     // Per-pane content + viewport extents, captured each frame via reflect.
     // Wheel/PgUp scrolling converts a fixed LINE count into the fraction these
@@ -2910,6 +2955,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         detail_view, dmax_content, dmax_view;
 
     auto root = Renderer(input, [&] {
+        // Enable the kitty keyboard protocol now that the alt screen is live
+        // (see kitty_pushed). One-shot; the bytes are a zero-width mode set, so
+        // interleaving with the frame FTXUI is about to draw is harmless.
+        if (!kitty_pushed) {
+            write_tty_raw("\033[>1u");
+            kitty_pushed = true;
+        }
         const std::size_t frame_now = frame.load(std::memory_order_relaxed);
         std::lock_guard lk(state_mtx);
 
@@ -3064,7 +3116,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
         Element footer =
             zone == Zone::Input
-                ? gtext(" Enter send · Shift+Enter newline · ↑↓ history · @ attach · "
+                ? gtext(" Enter send · Alt/Shift/Ctrl+Enter newline · ↑↓ history · @ attach · "
                         "/effort /thinking /temp /model /provider /settings /theme "
                         "/compact /skill · Tab panes · PgUp/PgDn scroll · Esc stop · "
                         "F2 reasoning · Ctrl+C twice quit") | dim
@@ -3507,6 +3559,35 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             else if (e == Event::Return) paste_buf += '\n';
             else if (e == Event::Tab) paste_buf += '\t';
             return true;
+        }
+        // Normalize kitty keyboard-protocol "CSI u" key reports (we enable the
+        // protocol around the loop — it is the only scheme some terminals, e.g.
+        // kitty/konsole/recent-VTE, honor; they ignore modifyOtherKeys). A
+        // modified Enter (codepoint 13 + any modifier) is the multi-line
+        // newline. The handful of keys the protocol re-encodes that the
+        // handlers below expect in legacy form — Escape and the Ctrl combos —
+        // are rewritten back to the canonical FTXUI event, leaving everything
+        // downstream untouched. Keys the protocol leaves legacy (plain text,
+        // arrows, unmodified Enter/Tab/Backspace) never match parse_kitty_key.
+        // Placed after the paste block so pasted bytes are never reinterpreted.
+        if (!e.is_mouse()) {
+            if (const auto k = parse_kitty_key(e.input())) {
+                const auto [cp, mod] = *k;
+                const int mask = mod - 1;  // bit 0 Shift, bit 1 Alt, bit 2 Ctrl
+                const bool alt = mask & 2;
+                const bool ctrl = mask & 4;
+                if (cp == 13 && mod >= 2) {  // Shift/Ctrl/Alt+Enter → newline
+                    insert_at_cursor("\n");
+                    post();
+                    return true;
+                }
+                if (cp == 27 && mask == 0) e = Event::Escape;
+                else if (cp == 99 && ctrl && !alt) e = Event::CtrlC;
+                else if (cp == 121 && ctrl && !alt) e = Event::CtrlY;
+                else if (cp == 118 && ctrl && alt) e = Event::CtrlAltV;
+                else if (cp == 118 && ctrl) e = Event::CtrlV;
+                // Any other CSI u key falls through unrewritten (just unbound).
+            }
         }
         // While the approval modal is up, route the four keys and swallow the rest.
         if (gate.pending()) {
@@ -4033,15 +4114,18 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             state.toggle_reasoning();
             return true;
         }
-        // Shift+Enter (and Alt+Enter as a no-config fallback) insert a literal
-        // newline so the user can compose a multi-line message; plain Enter
-        // still submits (handled by the Input's on_enter). Terminals encode a
-        // modified Return differently — accept the common forms. The CSI ~ form
-        // needs modifyOtherKeys, which we request around the loop; the CSI u
-        // form comes from terminals speaking the kitty keyboard protocol; ESC+CR
-        // is Alt+Enter, which most terminals send without any mode change.
+        // Shift/Ctrl+Enter (and Alt+Enter as a no-config fallback) insert a
+        // literal newline so the user can compose a multi-line message; plain
+        // Enter still submits (handled by the Input's on_enter). Terminals
+        // encode a modified Return differently — accept the common forms. The
+        // CSI ~ form needs modifyOtherKeys, which we request around the loop;
+        // the CSI u form comes from terminals speaking the kitty keyboard
+        // protocol; ESC+CR is Alt+Enter, which most terminals send without any
+        // mode change. The modifier digit is 2 for Shift and 5 for Ctrl.
         if (e == Event::Special("\x1B[27;2;13~") ||  // Shift+Enter (modifyOtherKeys)
+            e == Event::Special("\x1B[27;5;13~") ||  // Ctrl+Enter  (modifyOtherKeys)
             e == Event::Special("\x1B[13;2u") ||     // Shift+Enter (kitty)
+            e == Event::Special("\x1B[13;5u") ||     // Ctrl+Enter  (kitty)
             e == Event::Special("\x1B\r") ||         // Alt+Enter
             e == Event::Special("\x1B\n")) {
             insert_at_cursor("\n");
@@ -4215,16 +4299,22 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         return false;
     });
 
-    // Ask the terminal to bracket pastes (DEC private mode 2004) so a multi-line
-    // paste arrives as one chunk instead of a burst of Return keys (each of
-    // which would otherwise submit a separate message), and to report modified
-    // Return via modifyOtherKeys level 1 so Shift+Enter is distinguishable from
-    // Enter. Level 1 only reformats keys that lack another encoding, so it
-    // leaves Ctrl+C/Ctrl+Y/Tab untouched. FTXUI manages neither mode; we restore
-    // both after the loop. Terminals that don't understand a sequence ignore it.
+    // Set up the screen-independent input modes around the loop; FTXUI manages
+    // neither, so we restore each afterwards, and any a terminal doesn't grok it
+    // ignores. (1) Bracketed paste (DEC private mode 2004): a multi-line paste
+    // arrives as one chunk instead of a burst of Return keys (each of which
+    // would otherwise submit a separate message). (2) modifyOtherKeys level 1:
+    // lets xterm-family terminals distinguish some modified keys without
+    // reformatting Ctrl+C/Ctrl+Y/Tab. The kitty keyboard protocol — the scheme
+    // that actually disambiguates Shift/Ctrl+Enter, which modifyOtherKeys leaves
+    // alone as a "well-known" key — is enabled separately from the first render
+    // (see kitty_pushed): its flags are per-screen and must be pushed only after
+    // FTXUI has switched to the alt screen. The trailing pop here is a harmless
+    // no-op on the main screen (the alt screen's stack is discarded on exit)
+    // that still tidies up on any terminal not keeping separate stacks.
     write_tty_raw("\033[?2004h\033[>4;1m");
     screen.Loop(root);
-    write_tty_raw("\033[?2004l\033[>4m");
+    write_tty_raw("\033[<u\033[?2004l\033[>4m");
 
     // Shutdown: release any pending approval, stop the worker (waits for any
     // in-flight turn), then the refresher. The screen outlives both joins so

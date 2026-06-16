@@ -39,13 +39,15 @@ constexpr int kFieldProfile        = 11;
 // Profile detail fields (inline labels).
 struct ProfileField {
     std::string label;
-    enum { SName, SKind, SBaseUrl, SModel } kind;
+    enum { SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking } kind;
 };
 const ProfileField kProfileFields[] = {
     {"name",     ProfileField::SName},
     {"kind",     ProfileField::SKind},
     {"base_url", ProfileField::SBaseUrl},
     {"model",    ProfileField::SModel},
+    {"thinking",          ProfileField::SThinking},
+    {"drop_think",        ProfileField::SDropThinking},
 };
 
 // Valid provider kind values.
@@ -170,6 +172,8 @@ void ProfileEditor::begin_edit_profile_field() {
         case ProfileField::SKind:     edit_buf = p.kind; break;
         case ProfileField::SBaseUrl:  edit_buf = p.base_url; break;
         case ProfileField::SModel:    edit_buf = p.model; break;
+        case ProfileField::SThinking:    edit_buf = (p.thinking < 0) ? "" : (p.thinking > 0 ? "on" : "off"); break;
+        case ProfileField::SDropThinking: edit_buf = p.drop_thinking_tag ? "yes" : "no"; break;
         }
         edit_field_idx = profile_field_sel;
         profile_edit_text_mode = true;
@@ -189,6 +193,14 @@ void ProfileEditor::commit_profile_field_edit() {
     case ProfileField::SKind:     p.kind = edit_buf; break;
     case ProfileField::SBaseUrl:  p.base_url = edit_buf; break;
     case ProfileField::SModel:    p.model = edit_buf; break;
+    case ProfileField::SThinking:
+        if (edit_buf == "on") p.thinking = 1;
+        else if (edit_buf == "off") p.thinking = 0;
+        else p.thinking = -1;
+        break;
+    case ProfileField::SDropThinking:
+        p.drop_thinking_tag = (edit_buf == "yes" || edit_buf == "true" || edit_buf == "on" || edit_buf == "1");
+        break;
     }
     profile_edit_text_mode = false;
     edit_field_idx = -1;
@@ -215,11 +227,15 @@ std::string profile_field_label(int i) {
 
 std::string profile_field_value(const Profile& p, int field_idx) {
     switch (field_idx) {
-    case kPFieldName:    return p.name;
-    case kPFieldKind:    return p.kind.empty() ? "(auto)" : p.kind;
-    case kPFieldBaseUrl: return p.base_url;
-    case kPFieldModel:   return p.model;
-    default:             return {};
+    case kPFieldName:     return p.name;
+    case kPFieldKind:     return p.kind.empty() ? "(auto)" : p.kind;
+    case kPFieldBaseUrl:  return p.base_url;
+    case kPFieldModel:    return p.model;
+    case kPFieldThinking:
+        if (p.thinking < 0) return "(unset)";
+        return p.thinking > 0 ? "on" : "off";
+    case kPFieldDropThinking: return p.drop_thinking_tag ? "yes" : "no";
+    default:              return {};
     }
 }
 

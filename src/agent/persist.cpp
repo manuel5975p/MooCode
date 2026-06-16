@@ -149,6 +149,8 @@ Settings load_settings(const std::string& home) {
             if (auto v = (*pt)["kind"].value<std::string>()) p.kind = *v;
             if (auto v = (*pt)["base_url"].value<std::string>()) p.base_url = *v;
             if (auto v = (*pt)["model"].value<std::string>()) p.model = *v;
+            if (auto v = (*pt)["thinking"].value<bool>()) p.thinking = *v ? 1 : 0;
+            if (auto v = (*pt)["drop_thinking_tag"].value<bool>()) p.drop_thinking_tag = *v;
             if (const toml::array* arr = (*pt)["models"].as_array())
                 for (const toml::node& n : *arr)
                     if (auto v = n.value<std::string>()) p.models.push_back(*v);
@@ -194,6 +196,8 @@ void save_settings(const std::string& home, const Settings& s) {
             if (!p->kind.empty()) pt.insert("kind", p->kind);
             if (!p->base_url.empty()) pt.insert("base_url", p->base_url);
             if (!p->model.empty()) pt.insert("model", p->model);
+            if (p->thinking >= 0) pt.insert("thinking", p->thinking != 0);
+            if (p->drop_thinking_tag) pt.insert("drop_thinking_tag", true);
             if (!p->models.empty()) {
                 toml::array arr;
                 for (const std::string& m : p->models) arr.push_back(m);
