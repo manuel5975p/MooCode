@@ -15,8 +15,10 @@
 #include <string>
 #include <thread>
 
+#ifndef _WIN32
 #include <fcntl.h>   // open (OSC 52 clipboard write to /dev/tty)
 #include <unistd.h>  // write, close, STDOUT_FILENO
+#endif
 
 #include "agent/anthropic_provider.hpp"  // ProviderKind, provider_kind_name
 #include "agent/agent.hpp"
@@ -27,11 +29,15 @@
 #include "agent/mentions.hpp"
 #include "agent/openai_provider.hpp"  // openai_model_likely_reasoning
 #include "agent/persist.hpp"
+#include "agent/platform.hpp"          // user_home, console helpers
 #include "agent/provider_factory.hpp"  // ProviderConnection, make_provider
 #include "agent/question_tool.hpp"
 #include "agent/strutil.hpp"           // to_lower
 #include "agent/settings_editor.hpp"  // SettingsForm, FieldDef, FormAction
 #include "agent/syntax_highlight.hpp"  // highlight_block, language_from_tag
+#include "agent/skills.hpp"            // SkillRegistry, /skill command
+#include "agent/tui_glyphs.hpp"        // glyphify, glyph mode
+#include "agent/tui_platform.hpp"      // native clipboard, console setup
 #include "agent/tui_slash.hpp"         // parse_effort/_thinking/_temp/_theme
 #include "agent/tui_text.hpp"          // sanitize_tui_text
 #include "agent/tui_worker.hpp"        // TuiWorker, WorkItem
@@ -136,6 +142,28 @@ std::string describe_mouse(const ftxui::Mouse& m) {
                                                           : "mov";
     return std::string(b) + "·" + mo + " " + std::to_string(m.x) + "," +
            std::to_string(m.y);
+}
+
+// One-line description of a key event for the --debug status chip: the raw
+// input bytes shown as printable ASCII (control bytes / ESC as caret or hex)
+// plus a hex dump, so an unhandled key (e.g. Shift+Enter) reveals exactly what
+// the terminal sends — which is what we need to bind it. Pure.
+std::string describe_key(const ftxui::Event& e) {
+    const std::string& in = e.input();
+    std::string readable;
+    std::string hex;
+    static const char* digits = "0123456789abcdef";
+    for (unsigned char c : in) {
+        if (c == 0x1B) readable += "ESC";
+        else if (c < 0x20) { readable += '^'; readable += char('@' + c); }
+        else if (c == 0x7F) readable += "DEL";
+        else readable += char(c);
+        if (!hex.empty()) hex += ' ';
+        hex += digits[c >> 4];
+        hex += digits[c & 0xF];
+    }
+    const char* kind = e.is_character() ? "chr" : "spc";
+    return std::string(kind) + " [" + readable + "] " + hex;
 }
 
 // Mask an API key for display: "sk-…<last4>" (or "(none)" / "(set)" for short
@@ -637,6 +665,15 @@ namespace {
 
 using namespace ftxui;
 
+// text() for decorative chrome (separators, carets, status marks, help lines):
+// folds the glyphs to ASCII in ASCII mode, passes through verbatim otherwise.
+// Use for any string literal/variable that carries chrome glyphs and does NOT
+// already flow through sanitize_tui_text (which folds dynamic text itself).
+inline Element gtext(std::string s) { return text(glyphify(s)); }
+
+// Blinking text-edit block cursor, ASCII-folded ("▌" -> "|" in ASCII mode).
+inline std::string block_cursor(bool on) { return on ? glyphify("▌") : std::string(" "); }
+
 // ~/.moo/history (empty when persistence is off). One-time best-effort
 // migration of the legacy ~/.moo_history file the first time it is needed.
 std::string history_path(const std::string& home) {
@@ -644,9 +681,9 @@ std::string history_path(const std::string& home) {
     std::string path = home + "/history";
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
-        const char* h = std::getenv("HOME");
-        if (h) {
-            std::string legacy = std::string(h) + "/.moo_history";
+        std::string h = user_home();
+        if (!h.empty()) {
+            std::string legacy = h + "/.moo_history";
             if (std::filesystem::exists(legacy, ec)) {
                 std::filesystem::create_directories(home, ec);
                 std::filesystem::copy_file(legacy, path, ec);  // never delete legacy
@@ -829,11 +866,11 @@ Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
         Elements ev;
         switch (e.kind) {
             case TuiState::ChatKind::User:
-                ev.push_back(text("▌ you") | bold | color(Color::Green));
+                ev.push_back(gtext("▌ you") | bold | color(Color::Green));
                 ev.push_back(paragraph(e.text) | color(Color::GrayLight));
                 break;
             case TuiState::ChatKind::Assistant:
-                ev.push_back(text("▌ moocode") | bold | color(Color::CyanLight));
+                ev.push_back(gtext("▌ moocode") | bold | color(Color::CyanLight));
                 ev.push_back(render_markdownish(e.text, st.syntax_theme()));
                 break;
             case TuiState::ChatKind::Reasoning:
@@ -858,7 +895,7 @@ Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
                             dim);
                     }
                 } else {
-                    ev.push_back(paragraph("· " + e.text) | dim);
+                    ev.push_back(paragraph(glyphify("· ") + e.text) | dim);
                 }
                 break;
             case TuiState::ChatKind::ErrorLine:
@@ -915,12 +952,12 @@ Element render_chat(const TuiState& st, std::size_t frame, HitMap& hits,
 Element status_glyph(TuiState::Status s, std::size_t frame, bool quiet) {
     switch (s) {
         case TuiState::Status::Running:
-            return quiet ? text("·") | dim
+            return quiet ? gtext("·") | dim
                          : text(spin_glyph(frame)) | color(Color::Yellow);
         case TuiState::Status::Ok:
-            return text("✓") | color(Color::Green);
+            return gtext("✓") | color(Color::Green);
         case TuiState::Status::Failed:
-            return text("✗") | color(Color::Red);
+            return gtext("✗") | color(Color::Red);
     }
     return text(" ");
 }
@@ -1088,7 +1125,7 @@ Element render_subagent_browser(const TuiState& st, std::size_t frame,
     for (const auto& g : st.subagents()) {
         NodeKey key{NodeKey::Pane::Subagents, 0, g.id, ""};
         hits.push_back({{}, key, /*expander=*/true});
-        Element glyph = text(g.expanded ? "▼ " : "▶ ") | reflect(hits.back().box);
+        Element glyph = gtext(g.expanded ? "▼ " : "▶ ") | reflect(hits.back().box);
         Elements head_cells{std::move(glyph),
                             text(g.label.empty() ? "sub-agent" : g.label) | bold};
         if (!g.model.empty())
@@ -1098,7 +1135,7 @@ Element render_subagent_browser(const TuiState& st, std::size_t frame,
         if (!g.expanded && g.status == TuiState::Status::Running) {
             auto [tool, arg] = running_subagent_tool(g);
             std::string hint = tool.empty() ? "" : "  ↳ " + tool;
-            if (!hint.empty()) head_cells.push_back(text(hint) | dim);
+            if (!hint.empty()) head_cells.push_back(gtext(hint) | dim);
         }
         head_cells.push_back(text(" ") | flex);
         head_cells.push_back(status_glyph(g.status, frame, /*quiet=*/false));
@@ -1121,9 +1158,18 @@ Element render_subagent_browser(const TuiState& st, std::size_t frame,
 // tmux with `set-clipboard on` (default `external`) intercepts it and forwards
 // to the outer terminal — a DCS passthrough wrapper would instead bypass that.
 // Returns false if the terminal fd is unwritable or content is empty.
-bool osc52_copy(const std::string& content) {
-    if (content.empty()) return false;
-    std::string seq = "\033]52;c;" + base64_encode(content) + "\a";
+// Write `seq` straight to the controlling terminal, bypassing FTXUI's screen
+// buffer (so it neither disturbs the frame nor is escaped by it). Used for OSC
+// 52 clipboard writes and for the DEC private modes FTXUI does not manage
+// (bracketed paste, modifyOtherKeys). Returns false if the terminal fd is
+// unwritable. POSIX writes to /dev/tty (falling back to stdout); Windows has no
+// /dev/tty, so it writes to stdout, which ConsoleGuard has put in VT mode.
+bool write_tty_raw(std::string_view seq) {
+    if (seq.empty()) return false;
+#ifdef _WIN32
+    return std::fwrite(seq.data(), 1, seq.size(), stdout) == seq.size() &&
+           std::fflush(stdout) == 0;
+#else
     int fd = ::open("/dev/tty", O_WRONLY | O_CLOEXEC);
     bool owned = fd >= 0;
     if (!owned) fd = STDOUT_FILENO;
@@ -1138,6 +1184,18 @@ bool osc52_copy(const std::string& content) {
     }
     if (owned) ::close(fd);
     return ok;
+#endif
+}
+
+bool osc52_copy(const std::string& content) {
+    if (content.empty()) return false;
+#ifdef _WIN32
+    // Legacy conhost ignores OSC 52, so use the native Win32 clipboard (works
+    // in both cmd.exe and Windows Terminal).
+    return tui_platform::native_clipboard_copy(content);
+#else
+    return write_tty_raw("\033]52;c;" + base64_encode(content) + "\a");
+#endif
 }
 
 // The unified activity tree: top-level calls in order; an expanded
@@ -1168,7 +1226,7 @@ Element render_activity_tree(const TuiState& st, std::size_t frame,
     // tree stays a scannable list and every line in it is a clickable row.
     for (const auto& a : st.activity()) {
         NodeKey key{NodeKey::Pane::Activity, 0, a.id, ""};
-        add_row(hbox({text("· ") | dim, text(a.name) | bold,
+        add_row(hbox({gtext("· ") | dim, text(a.name) | bold,
                       text(" " + a.args) | color(Color::GrayLight) | flex,
                       text(" "), status_glyph(a.status, frame, /*quiet=*/false)}),
                 key);
@@ -1398,7 +1456,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             std::shared_ptr<FileChangeFn> sink,
             QuestionGate* question_gate_ptr,
             std::shared_ptr<SubagentActivityFn> on_subagent_activity,
-            std::shared_ptr<SubagentTextFn> on_subagent_text) {
+            std::shared_ptr<SubagentTextFn> on_subagent_text,
+            SkillRegistry* skills, ToolRegistry* tool_reg) {
     // Status-bar strings render verbatim every frame; sanitize them once.
     // (api_key/home are never rendered; profile/model may be swapped later but
     // only with values from settings pickers, typed input, or these fields.)
@@ -1407,6 +1466,15 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     info.cwd = sanitize_tui_text(info.cwd);
     info.provider = sanitize_tui_text(info.provider);
     info.profile = sanitize_tui_text(info.profile);
+
+    // Resolve the decorative-glyph mode once, on this (main) thread, before any
+    // worker thread renders — so ASCII fallback on a legacy Windows console is
+    // consistent across the whole session.
+    set_glyph_mode(detect_glyph_mode());
+
+    // Configure the console for UTF-8 + VT output (Windows); no-op on POSIX.
+    // Lives for the whole TUI; restores the prior console state on return.
+    tui_platform::ConsoleGuard console_guard;
 
     TuiState state;
     std::mutex state_mtx;
@@ -1448,7 +1516,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     auto now_iso = [] {
         std::time_t t = std::time(nullptr);
         std::tm tm{};
+#ifdef _WIN32
+        if (::gmtime_s(&tm, &t) != 0) return std::string();
+#else
         if (!::gmtime_r(&t, &tm)) return std::string();
+#endif
         char buf[32];
         std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
         return std::string(buf);
@@ -2359,6 +2431,40 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                  }
              },
              {}},
+            {"/skill", {"/skills"},
+             [&](std::string_view arg) {
+                 std::lock_guard lk(state_mtx);
+                 if (!skills || !tool_reg) {
+                     state.push_error("skills are not available in this session");
+                     return;
+                 }
+                 // No argument: list registered skills and their load state.
+                 if (arg.empty()) {
+                     std::string msg = "skills:";
+                     auto listing = skills->list();
+                     if (listing.empty()) msg += " (none)";
+                     for (const auto& s : listing) {
+                         msg += "\n  " + s.name + (s.loaded ? "  *" : "");
+                         if (!s.description.empty()) msg += "  — " + s.description;
+                     }
+                     msg += "\n(usage: /skill <name> to load)";
+                     state.push_info(msg);
+                     return;
+                 }
+                 // Load the named skill into the live tool registry. Safe here:
+                 // /skill is refused mid-turn (see submit), so no worker thread
+                 // is reading the registry concurrently.
+                 if (auto r = skills->load(std::string(arg), *tool_reg); r)
+                     state.push_info("/skill " + std::string(arg) + ": " + *r);
+                 else
+                     state.push_error("/skill: " + r.error().msg);
+             },
+             [&]() -> std::vector<std::string> {
+                 std::vector<std::string> names;
+                 if (skills)
+                     for (const auto& s : skills->list()) names.push_back(s.name);
+                 return names;
+             }},
         },
         &input_content, &cursor_pos, &state_mtx, &model_complete);
 
@@ -2751,7 +2857,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     InputOption iopt;
     iopt.content = &input_content;
     iopt.cursor_position = &cursor_pos;
-    iopt.placeholder = "ask moocode…  (/exit to quit · @ to attach files · Ctrl+V paste img)";
+    iopt.placeholder = glyphify("ask moocode…  (/exit quit · @ attach · Shift+Enter newline · Ctrl+V paste img)");
     iopt.multiline = false;
     iopt.on_change = [&] {
         refresh_complete();
@@ -2769,6 +2875,16 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // sends mouse reports (the app does request them at startup).
     std::string last_mouse = "none yet";
     int mouse_events = 0;
+    std::string last_key = "none yet";  // --debug: last key event's raw bytes
+    int key_events = 0;
+
+    // Bracketed-paste capture (UI thread only). A paste arrives wrapped in
+    // ESC[200~ … ESC[201~ (we enable DEC mode 2004 around the loop); every byte
+    // between the markers is buffered here and spliced in as one edit, so the
+    // newlines in a multi-line paste never reach the Input's on_enter and fire
+    // one sent message per line.
+    bool pasting = false;
+    std::string paste_buf;
 
     float chat_scroll = 1.0f;      // 0 = top, 1 = bottom
     float activity_scroll = 1.0f;  // activity tree
@@ -2785,6 +2901,14 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     HitMap hits;  // last rendered frame's row hitboxes (UI thread only)
     std::optional<NodeKey> last_detail;  // detail target; scroll resets on change
 
+    // Per-pane content + viewport extents, captured each frame via reflect.
+    // Wheel/PgUp scrolling converts a fixed LINE count into the fraction these
+    // panes scroll by, so one tick moves the same distance whether the buffer
+    // is ten lines or ten thousand — fraction-only scrolling flew across (and
+    // on burst-prone terminals "escalated" through) long chats.
+    ftxui::Box chat_content, chat_view, act_content, act_view, detail_content,
+        detail_view, dmax_content, dmax_view;
+
     auto root = Renderer(input, [&] {
         const std::size_t frame_now = frame.load(std::memory_order_relaxed);
         std::lock_guard lk(state_mtx);
@@ -2797,13 +2921,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             last_detail = dk;
         }
 
-        std::string tok = "▣ ";
+        std::string tok = glyphify("▣ ");
         if (state.has_tokens()) {
             tok += human_tokens(state.tokens());
             if (info.context_window > 0)
                 tok += " / " + human_tokens(info.context_window);
         } else {
-            tok += "—";
+            tok += glyphify("—");
         }
         tok += " tok ";
 
@@ -2832,14 +2956,19 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 ? text(" ")
                 : text(" " + live_provider + " ") | bold | color(Color::Magenta),
             text(live_model + " "),
-            text("· " + info.cwd + " ") | dim,
-            filler(),
+            gtext("· " + info.cwd + " ") | dim,
+            // --debug: key/mouse chips anchored left (before the filler) so a
+            // long raw-byte dump is never clipped off the right edge.
             !info.debug
                 ? text("")
-                : text("mouse[" + std::to_string(mouse_events) + "] " +
-                       last_mouse + " ") |
-                      color(Color::Yellow),
-            ctl.empty() ? text("") : text("⚙ " + ctl) | color(Color::Yellow),
+                : hbox({text("key[" + std::to_string(key_events) + "] " +
+                             last_key + "  ") |
+                            color(Color::GreenLight),
+                        text("mouse[" + std::to_string(mouse_events) + "] " +
+                             last_mouse + " ") |
+                            color(Color::Yellow)}),
+            filler(),
+            ctl.empty() ? text("") : gtext("⚙ " + ctl) | color(Color::Yellow),
             text(tok) | color(Color::GrayLight),
             state.running()
                 ? hbox({text(spin_glyph(frame_now)) | color(Color::Yellow),
@@ -2854,16 +2983,20 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
         Element chat = render_chat(state, frame_now, hits,
                                    zone == Zone::Chat && follow_chat);
-        chat = (zone == Zone::Chat && follow_chat)
-                   ? chat | yframe | vscroll_indicator | flex
-                   : chat | focusPositionRelative(0.f, chat_scroll) | yframe |
-                         vscroll_indicator | flex;
+        chat = chat | reflect(chat_content);
+        chat = ((zone == Zone::Chat && follow_chat)
+                    ? chat | yframe | vscroll_indicator | flex
+                    : chat | focusPositionRelative(0.f, chat_scroll) | yframe |
+                          vscroll_indicator | flex) |
+               reflect(chat_view);
         Element tree = render_activity_tree(state, frame_now, hits,
                                             zone == Zone::Activity && follow_act);
-        tree = (zone == Zone::Activity && follow_act)
-                   ? tree | yframe | vscroll_indicator | flex
-                   : tree | focusPositionRelative(0.f, activity_scroll) | yframe |
-                         vscroll_indicator | flex;
+        tree = tree | reflect(act_content);
+        tree = ((zone == Zone::Activity && follow_act)
+                    ? tree | yframe | vscroll_indicator | flex
+                    : tree | focusPositionRelative(0.f, activity_scroll) | yframe |
+                          vscroll_indicator | flex) |
+               reflect(act_view);
         // The lower pane is content-driven: the foldable subagents browser when
         // its zone is focused / a sub-agent (or nothing) is selected, else the
         // selected plain node's I/O.
@@ -2879,8 +3012,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             (show_browser
                  ? render_subagent_browser(state, frame_now, hits, browser_focus)
                  : render_detail(state, frame_now)) |
-            focusPositionRelative(0.f, detail_scroll) | yframe |
-            vscroll_indicator | flex;
+            reflect(detail_content) | focusPositionRelative(0.f, detail_scroll) |
+            yframe | vscroll_indicator | flex | reflect(detail_view);
 
         Element complete_box = nullptr;
         if (model_complete.active) {
@@ -2918,8 +3051,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 size(WIDTH, LESS_THAN, 60);
         }
 
+        // The input grows with multi-line messages (Shift+Enter / paste) but is
+        // capped so a large paste can't swallow the screen; FTXUI's internal
+        // `frame` scrolls the cursor line into view past the cap.
         Element input_line =
-            hbox({text(" ❯ ") | bold | color(Color::Cyan), input->Render() | flex}) |
+            hbox({gtext(" ❯ ") | bold | color(Color::Cyan),
+                  input->Render() | flex | size(HEIGHT, LESS_THAN, 10)}) |
             border;
         Element input_box = complete_box
                                 ? vbox({complete_box, input_line})
@@ -2927,13 +3064,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
         Element footer =
             zone == Zone::Input
-                ? text(" Enter send · ↑↓ history · @ attach · /effort /thinking "
-                       "/temp /model /provider /settings /theme /compact · "
-                       "Tab panes · PgUp/PgDn scroll · Esc stop · F2 reasoning · "
-                       "Ctrl+C twice quit") | dim
-                : text(" ↑↓ select · ←→ fold sub-agent · Enter inspect · "
-                       "Ctrl+Y copy · PgUp/PgDn scroll · Tab next pane "
-                       "(…/subagents) · Esc back to input") | dim;
+                ? gtext(" Enter send · Shift+Enter newline · ↑↓ history · @ attach · "
+                        "/effort /thinking /temp /model /provider /settings /theme "
+                        "/compact /skill · Tab panes · PgUp/PgDn scroll · Esc stop · "
+                        "F2 reasoning · Ctrl+C twice quit") | dim
+                : gtext(" ↑↓ select · ←→ fold sub-agent · Enter inspect · "
+                        "Ctrl+Y copy · PgUp/PgDn scroll · Tab next pane "
+                        "(…/subagents) · Esc back to input") | dim;
 
         // Deterministic 60/40 split: pin the activity pane to 40% of the screen
         // width so the divider never drifts with content. A dual-`flex` layout
@@ -2997,7 +3134,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             }
             // Custom input line.
             std::string cursor_display =
-                (frame_now / 16 % 2 == 0) ? "▌" : " ";
+                block_cursor(frame_now / 16 % 2 == 0);
             std::string custom_display =
                 question_modal.custom_mode
                     ? question_modal.custom_text + cursor_display
@@ -3014,7 +3151,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 question_modal.custom_mode
                     ? "[Enter] submit  [Tab] options  [Esc] halt"
                     : "[↑↓] navigate  [1-9] pick  [Tab] custom  [Enter] pick  [Esc] halt";
-            Element help_line = text(help) | dim | center;
+            Element help_line = gtext(help) | dim | center;
 
             // Put question text as first body element (wraps naturally).
             Elements body_elts;
@@ -3045,7 +3182,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                        vbox({vbox(std::move(rows)) | vscroll_indicator | yframe |
                                  size(HEIGHT, LESS_THAN, 18),
                              separator(),
-                             text("↑↓ select · Enter choose · Esc cancel") | dim | center})) |
+                             gtext("↑↓ select · Enter choose · Esc cancel") | dim | center})) |
                 size(WIDTH, LESS_THAN, 100) | clear_under | center;
             return dbox({page | dim, dialog});
         }
@@ -3076,7 +3213,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                         settings_form.display_value(i, info.model, info.provider));
                     if (settings_form.editing && i == settings_form.sel) {
                         std::string cursor =
-                            (frame_now / 16 % 2 == 0) ? "▌" : " ";
+                            block_cursor(frame_now / 16 % 2 == 0);
                         val = sanitize_tui_text(settings_form.edit_buf) + cursor;
                     }
                     std::string row_text = "  " + f.label + ": " + val + "  ";
@@ -3105,13 +3242,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                     const Profile* p = (pe.sel >= 0 && pe.sel < static_cast<int>(pe.profiles.size()))
                         ? &pe.profiles[pe.sel] : nullptr;
                     rows.push_back(text("  profile: " + (p ? p->name : "")) | bold);
-                    rows.push_back(text("  ─────────────────────────────") | dim);
+                    rows.push_back(gtext("  ─────────────────────────────") | dim);
                     if (p) {
                         for (int i = 0; i < kNumProfileFields; ++i) {
                             std::string val = profile_field_value(*p, i);
                             if (pe.profile_edit_text_mode && pe.edit_field_idx == i)
                                 val = sanitize_tui_text(pe.edit_buf) +
-                                    ((frame_now / 16 % 2 == 0) ? "▌" : " ");
+                                    (block_cursor(frame_now / 16 % 2 == 0));
                             else
                                 val = sanitize_tui_text(val);
                             Element fr = text("  " + profile_field_label(i) + ": " + val);
@@ -3126,7 +3263,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                             rows.push_back(mr);
                         }
                         if (pe.editing_models) {
-                            rows.push_back(text("  ─────────────────────────────") | dim);
+                            rows.push_back(gtext("  ─────────────────────────────") | dim);
                             for (int mi = 0; mi < static_cast<int>(p->models.size()); ++mi) {
                                 std::string mv = sanitize_tui_text(p->models[mi]);
                                 Element mr = text("  " + mv);
@@ -3161,7 +3298,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 // Credentials tab (stub for Phase 3)
                 const auto& ce = settings_form.credential_editor;
                 if (ce.profile_names.empty()) {
-                    tab_content = text("  (no profiles configured — add profiles first)") | dim | center;
+                    tab_content = gtext("  (no profiles configured — add profiles first)") | dim | center;
                 } else {
                     Elements rows;
                     for (int i = 0; i < static_cast<int>(ce.profile_names.size()); ++i) {
@@ -3176,7 +3313,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                         // Show masked input: show the raw edit buf length as asterisks
                         std::string masked(ce.key_edit_buf.size(), '*');
                         rows.push_back(text("  key: " + masked +
-                            ((frame_now / 16 % 2 == 0) ? "▌" : " ")));
+                            (block_cursor(frame_now / 16 % 2 == 0))));
                     }
                     tab_content = vbox(std::move(rows));
                 }
@@ -3189,7 +3326,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             // Warning banner for malformed file
             Element banner = emptyElement();
             if (settings_form.malformed_file) {
-                banner = text(" ⚠ " + sanitize_tui_text(settings_form.malformed_msg) + " ") |
+                banner = gtext(" ⚠ " + sanitize_tui_text(settings_form.malformed_msg) + " ") |
                          bgcolor(Color::Yellow) | color(Color::Black) | center;
             }
 
@@ -3201,7 +3338,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                              tab_content | vscroll_indicator | yframe |
                                  size(HEIGHT, LESS_THAN, 18),
                              separator(),
-                             text(help) | dim | center})) |
+                             gtext(help) | dim | center})) |
                 size(WIDTH, LESS_THAN, 80) | clear_under | center;
             return dbox({page | dim, dialog});
         }
@@ -3210,10 +3347,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             Element dlg =
                 window(text(" inspect ") | bold,
                        vbox({render_detail(state, frame_now) |
+                                 reflect(dmax_content) |
                                  focusPositionRelative(0.f, detail_max_scroll) |
-                                 yframe | vscroll_indicator | flex,
+                                 yframe | vscroll_indicator | flex |
+                                 reflect(dmax_view),
                              separator(),
-                             text("↑↓ / PgUp PgDn scroll · Esc close") | dim |
+                             gtext("↑↓ / PgUp PgDn scroll · Esc close") | dim |
                                  center})) |
                 size(WIDTH, EQUAL, std::max(40, tw - 6)) |
                 size(HEIGHT, EQUAL, std::max(12, th - 4)) | clear_under | center;
@@ -3290,16 +3429,84 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         }
     };
 
+    // Splice `text` into the prompt at the cursor (UI thread; input_content and
+    // cursor_pos are byte offsets, per FTXUI's Input). Snaps focus home and
+    // refreshes the completion popup + image chips, mirroring what the Input's
+    // own on_change does. Shared by bracketed paste and Shift+Enter newline.
+    auto insert_at_cursor = [&](std::string_view text) {
+        std::size_t at = std::min(
+            static_cast<std::size_t>(std::max(0, cursor_pos)), input_content.size());
+        input_content.insert(at, text);
+        cursor_pos = static_cast<int>(at + text.size());
+        zone = Zone::Input;
+        refresh_complete();
+        slash.refresh_complete();
+        reconcile_images();
+    };
+
     root |= CatchEvent([&](Event e) {
         // Surface any model-detection result the worker just posted (raises the
         // picker / reports) before handling the event itself.
         handle_detect_result();
+
+        // Convert a fixed number of content lines into the scroll fraction the
+        // focusPositionRelative panes use, so a wheel notch / key always moves
+        // the same visual distance regardless of buffer length. Falls back to a
+        // small fraction before the pane has been measured (boxes still empty).
+        auto frac = [](int lines, const ftxui::Box& content,
+                       const ftxui::Box& view) -> float {
+            const int ch = content.y_max - content.y_min + 1;
+            const int vh = view.y_max - view.y_min + 1;
+            const int range = ch - vh;        // scrollable rows
+            if (range <= 0) return 1.f;        // nothing (or not yet) to scroll
+            return static_cast<float>(lines) / static_cast<float>(range);
+        };
+        constexpr int kWheelLines = 3;  // one wheel notch, the terminal standard
+
         // --debug: record every incoming mouse event for the status chip, then
         // fall through — recorded here, before any handler can swallow it, so
         // the chip reflects exactly what the terminal delivers.
         if (info.debug && e.is_mouse()) {
             last_mouse = describe_mouse(e.mouse());
             ++mouse_events;
+        }
+        // --debug: record every key event (before any handler swallows it) so
+        // the status bar shows the raw bytes the terminal delivered — the way
+        // to discover what an unbound key like Shift+Enter actually sends here.
+        if (info.debug && !e.is_mouse() && !e.is_cursor_position() &&
+            !e.is_cursor_shape() && e != Event::Custom) {
+            last_key = describe_key(e);
+            ++key_events;
+            post();
+        }
+        // --- Bracketed paste -------------------------------------------------
+        // The terminal wraps a paste in ESC[200~ … ESC[201~ (FTXUI surfaces the
+        // markers as Special events). Buffer everything between them, then splice
+        // it in as a single edit. Handled before the modals so pasted bytes are
+        // never mistaken for key commands, and before on_enter ever sees the
+        // embedded newlines — which is what used to send one message per line.
+        static const Event kPasteStart = Event::Special("\x1B[200~");
+        static const Event kPasteEnd = Event::Special("\x1B[201~");
+        if (e == kPasteStart) {
+            pasting = true;
+            paste_buf.clear();
+            return true;
+        }
+        if (pasting) {
+            if (e == kPasteEnd) {
+                pasting = false;
+                if (!paste_buf.empty()) insert_at_cursor(paste_buf);
+                paste_buf.clear();
+                post();
+                return true;
+            }
+            // Collect the paste's bytes. Printable runs arrive as Character
+            // events; a newline as Return ("\n"), a tab as Tab ("\t"). Anything
+            // else inside a paste (stray control/mouse report) is dropped.
+            if (e.is_character()) paste_buf += e.character();
+            else if (e == Event::Return) paste_buf += '\n';
+            else if (e == Event::Tab) paste_buf += '\t';
+            return true;
         }
         // While the approval modal is up, route the four keys and swallow the rest.
         if (gate.pending()) {
@@ -3699,15 +3906,16 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             auto scroll_max = [&](float d) {
                 detail_max_scroll = std::clamp(detail_max_scroll + d, 0.f, 1.f);
             };
+            const int page = std::max(1, (dmax_view.y_max - dmax_view.y_min) - 1);
             if (e == Event::Escape) { detail_max = false; return true; }
-            if (e == Event::ArrowUp) { scroll_max(-0.05f); return true; }
-            if (e == Event::ArrowDown) { scroll_max(+0.05f); return true; }
-            if (e == Event::PageUp) { scroll_max(-0.2f); return true; }
-            if (e == Event::PageDown) { scroll_max(+0.2f); return true; }
+            if (e == Event::ArrowUp) { scroll_max(-frac(1, dmax_content, dmax_view)); return true; }
+            if (e == Event::ArrowDown) { scroll_max(+frac(1, dmax_content, dmax_view)); return true; }
+            if (e == Event::PageUp) { scroll_max(-frac(page, dmax_content, dmax_view)); return true; }
+            if (e == Event::PageDown) { scroll_max(+frac(page, dmax_content, dmax_view)); return true; }
             if (e.is_mouse() && e.mouse().button == Mouse::WheelUp)
-                { scroll_max(-0.05f); return true; }
+                { scroll_max(-frac(kWheelLines, dmax_content, dmax_view)); return true; }
             if (e.is_mouse() && e.mouse().button == Mouse::WheelDown)
-                { scroll_max(+0.05f); return true; }
+                { scroll_max(+frac(kWheelLines, dmax_content, dmax_view)); return true; }
             return true;  // modal: swallow everything else
         }
 
@@ -3776,11 +3984,15 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 return true;
             }
             if (e == Event::PageUp) {
-                detail_scroll = std::max(0.f, detail_scroll - 0.2f);
+                const int page = std::max(1, (detail_view.y_max - detail_view.y_min) - 1);
+                detail_scroll = std::clamp(
+                    detail_scroll - frac(page, detail_content, detail_view), 0.f, 1.f);
                 return true;
             }
             if (e == Event::PageDown) {
-                detail_scroll = std::min(1.f, detail_scroll + 0.2f);
+                const int page = std::max(1, (detail_view.y_max - detail_view.y_min) - 1);
+                detail_scroll = std::clamp(
+                    detail_scroll + frac(page, detail_content, detail_view), 0.f, 1.f);
                 return true;
             }
             if (e == Event::Escape) {
@@ -3821,6 +4033,21 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             state.toggle_reasoning();
             return true;
         }
+        // Shift+Enter (and Alt+Enter as a no-config fallback) insert a literal
+        // newline so the user can compose a multi-line message; plain Enter
+        // still submits (handled by the Input's on_enter). Terminals encode a
+        // modified Return differently — accept the common forms. The CSI ~ form
+        // needs modifyOtherKeys, which we request around the loop; the CSI u
+        // form comes from terminals speaking the kitty keyboard protocol; ESC+CR
+        // is Alt+Enter, which most terminals send without any mode change.
+        if (e == Event::Special("\x1B[27;2;13~") ||  // Shift+Enter (modifyOtherKeys)
+            e == Event::Special("\x1B[13;2u") ||     // Shift+Enter (kitty)
+            e == Event::Special("\x1B\r") ||         // Alt+Enter
+            e == Event::Special("\x1B\n")) {
+            insert_at_cursor("\n");
+            post();
+            return true;
+        }
         // Ctrl+Y: yank the focused detail-pane content to the system clipboard
         // via OSC 52 — terminal-independent and SSH-safe, since FTXUI's mouse
         // tracking otherwise swallows native drag-to-copy.
@@ -3856,8 +4083,10 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         const bool wheel_down =
             e.is_mouse() && e.mouse().button == Mouse::WheelDown;
 
-        // Helper: route a wheel delta to the correct pane.
-        auto apply_wheel = [&](float delta) {
+        // Route a wheel notch (dir = -1 up, +1 down) to the pane under the
+        // cursor, moving a fixed kWheelLines lines so the distance is the same
+        // on every buffer length and a burst of events can't fly to an edge.
+        auto apply_wheel = [&](int dir) {
             int tw = Terminal::Size().dimx;
             int th = Terminal::Size().dimy;
             // Mirror the renderer's split (same floors), so hit regions match.
@@ -3865,16 +4094,21 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             int dh = std::max(8, th * 2 / 5);
             switch (wheel_target(e.mouse().x, e.mouse().y, tw, th, aw, dh)) {
                 case Pane::Chat:
-                    chat_scroll = std::clamp(chat_scroll + delta, 0.f, 1.f);
+                    chat_scroll = std::clamp(
+                        chat_scroll + dir * frac(kWheelLines, chat_content, chat_view),
+                        0.f, 1.f);
                     follow_chat = false;
                     break;
                 case Pane::Activity:
-                    activity_scroll =
-                        std::clamp(activity_scroll + delta, 0.f, 1.f);
+                    activity_scroll = std::clamp(
+                        activity_scroll + dir * frac(kWheelLines, act_content, act_view),
+                        0.f, 1.f);
                     follow_act = false;
                     break;
                 case Pane::Detail:
-                    detail_scroll = std::clamp(detail_scroll + delta, 0.f, 1.f);
+                    detail_scroll = std::clamp(
+                        detail_scroll + dir * frac(kWheelLines, detail_content, detail_view),
+                        0.f, 1.f);
                     break;
                 case Pane::None:
                     break;
@@ -3882,21 +4116,25 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         };
 
         if (e == Event::PageUp) {
-            chat_scroll = std::max(0.f, chat_scroll - 0.05f);
+            const int page = std::max(1, (chat_view.y_max - chat_view.y_min) - 1);
+            chat_scroll =
+                std::clamp(chat_scroll - frac(page, chat_content, chat_view), 0.f, 1.f);
             follow_chat = false;
             return true;
         }
         if (e == Event::PageDown) {
-            chat_scroll = std::min(1.f, chat_scroll + 0.05f);
+            const int page = std::max(1, (chat_view.y_max - chat_view.y_min) - 1);
+            chat_scroll =
+                std::clamp(chat_scroll + frac(page, chat_content, chat_view), 0.f, 1.f);
             follow_chat = false;
             return true;
         }
         if (wheel_up) {
-            apply_wheel(-0.05f);
+            apply_wheel(-1);
             return true;
         }
         if (wheel_down) {
-            apply_wheel(+0.05f);
+            apply_wheel(+1);
             return true;
         }
         // --- Mouse: click a row to select; click it again to inspect ---------
@@ -3977,7 +4215,16 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         return false;
     });
 
+    // Ask the terminal to bracket pastes (DEC private mode 2004) so a multi-line
+    // paste arrives as one chunk instead of a burst of Return keys (each of
+    // which would otherwise submit a separate message), and to report modified
+    // Return via modifyOtherKeys level 1 so Shift+Enter is distinguishable from
+    // Enter. Level 1 only reformats keys that lack another encoding, so it
+    // leaves Ctrl+C/Ctrl+Y/Tab untouched. FTXUI manages neither mode; we restore
+    // both after the loop. Terminals that don't understand a sequence ignore it.
+    write_tty_raw("\033[?2004h\033[>4;1m");
     screen.Loop(root);
+    write_tty_raw("\033[?2004l\033[>4m");
 
     // Shutdown: release any pending approval, stop the worker (waits for any
     // in-flight turn), then the refresher. The screen outlives both joins so

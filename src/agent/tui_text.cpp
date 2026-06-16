@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <optional>
 
+#include "agent/tui_glyphs.hpp"  // ascii_fold, glyph_mode
+
 namespace moocode {
 
 namespace {
@@ -142,6 +144,10 @@ std::size_t skip_escape(std::string_view s, std::size_t i) {
 }  // namespace
 
 std::string sanitize_tui_text(std::string_view s) {
+    // In ASCII glyph mode, decorative chrome codepoints carried by dynamic text
+    // (info/chat lines that embed ·, →, 📎, …) are folded to plain ASCII here,
+    // since all such text flows through this function. Unicode mode skips it.
+    const bool fold = glyph_mode() == GlyphMode::Ascii;
     std::string out;
     out.reserve(s.size());
     std::size_t i = 0;
@@ -179,6 +185,8 @@ std::string sanitize_tui_text(std::string_view s) {
             continue;
         }
         if (is_dropped(*cp)) continue;
+        if (fold)
+            if (const char* rep = ascii_fold(*cp)) { out += rep; continue; }
         out.append(s, start, i - start);
     }
     return out;

@@ -236,7 +236,11 @@ std::string format_results(const std::vector<SearchResult>& results) {
 std::string current_month() {
     std::time_t t = std::time(nullptr);
     std::tm tm{};
+#ifdef _WIN32
+    if (::gmtime_s(&tm, &t) != 0) return {};
+#else
     if (!::gmtime_r(&t, &tm)) return {};
+#endif
     char buf[8];
     std::strftime(buf, sizeof buf, "%Y-%m", &tm);
     return buf;

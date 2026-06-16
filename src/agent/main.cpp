@@ -2,7 +2,11 @@
 // endpoint, registers filesystem/shell tools rooted at the current directory,
 // and runs the agent loop on a prompt from argv or stdin.
 
-#include <unistd.h>
+#ifdef _WIN32
+#include <io.h>      // _isatty, _fileno
+#else
+#include <unistd.h>  // isatty, access
+#endif
 
 #include <cctype>
 #include <cstdint>
@@ -33,11 +37,14 @@
 #include "agent/gitea_internal.hpp"
 #include "agent/image_util.hpp"
 #include "agent/mentions.hpp"
+#include "agent/onboarding.hpp"
 #include "agent/persist.hpp"
 #include "agent/search.hpp"
+#include "agent/skills.hpp"
 #include "agent/http.hpp"
 #include "agent/openai_provider.hpp"
 #include "agent/permissions.hpp"
+#include "agent/platform.hpp"
 #include "agent/provider_factory.hpp"
 #include "agent/question_tool.hpp"
 #include "agent/strutil.hpp"
@@ -61,17 +68,27 @@ bool program_on_path(std::string_view prog) {
     std::string_view sv(path);
     std::size_t start = 0;
     while (start <= sv.size()) {
-        std::size_t colon = sv.find(':', start);
+        std::size_t sep = sv.find(kPathListSep, start);
         std::string_view dir = sv.substr(
-            start, colon == std::string_view::npos ? std::string_view::npos : colon - start);
+            start, sep == std::string_view::npos ? std::string_view::npos : sep - start);
         if (!dir.empty()) {
             std::filesystem::path cand = std::filesystem::path(dir) / prog;
             std::error_code ec;
+#ifdef _WIN32
+            // No execute bit on Windows; resolve via PATHEXT extensions. An
+            // explicit extension (prog already ends in .exe/.bat/…) matches as-is.
+            if (std::filesystem::exists(cand, ec)) return true;
+            for (const char* ext : {".exe", ".com", ".cmd", ".bat"}) {
+                std::filesystem::path c = cand; c += ext;
+                if (std::filesystem::exists(c, ec)) return true;
+            }
+#else
             if (std::filesystem::exists(cand, ec) && ::access(cand.c_str(), X_OK) == 0)
                 return true;
+#endif
         }
-        if (colon == std::string_view::npos) break;
-        start = colon + 1;
+        if (sep == std::string_view::npos) break;
+        start = sep + 1;
     }
     return false;
 }
@@ -123,12 +140,20 @@ constexpr const char* kDefaultSystemPrompt =
 // Best-effort: empty string on failure. pre: cmd nonnull.
 std::string capture(const char* cmd) {
     std::string out;
+#ifdef _WIN32
+    FILE* p = ::_popen(cmd, "r");
+#else
     FILE* p = ::popen(cmd, "r");
+#endif
     if (!p) return out;
     char buf[4096];
     for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;)
         out.append(buf, n);
+#ifdef _WIN32
+    ::_pclose(p);
+#else
     ::pclose(p);
+#endif
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
         out.pop_back();
     return out;
@@ -149,7 +174,11 @@ std::string sysinfo() {
 std::string now_string() {
     std::time_t t = std::time(nullptr);
     std::tm tm{};
+#ifdef _WIN32
+    if (::localtime_s(&tm, &t) != 0) return {};
+#else
     if (!::localtime_r(&t, &tm)) return {};
+#endif
     char buf[64];
     std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &tm);
     return buf;
@@ -262,7 +291,7 @@ Approval tty_approve(const ToolCall& tc) {
     std::fprintf(stderr, "\n  approve %s(%s)?\n  [y]once [s]session [a]always [N]deny ",
                  tc.name.c_str(), tc.arguments_json.c_str());
     std::fflush(stderr);
-    FILE* tty = std::fopen("/dev/tty", "r");
+    FILE* tty = std::fopen(kConsoleInDevice, "r");
     if (!tty) return Approval::Deny;
     int c = std::fgetc(tty);
     // Drain the rest of the line so a trailing newline can't auto-answer the
@@ -361,7 +390,11 @@ int main(int argc, char** argv) {
         if (!prompt.empty()) prompt += ' ';
         prompt += word;
     }
+#ifdef _WIN32
+    const bool interactive = prompt.empty() && ::_isatty(::_fileno(stdin));
+#else
     const bool interactive = prompt.empty() && ::isatty(STDIN_FILENO);
+#endif
     if (prompt.empty() && !interactive)
         // Piped/redirected: read the whole stream so multi-line prompts work.
         prompt = read_all_stdin();
@@ -384,6 +417,22 @@ int main(int argc, char** argv) {
     // once, then load settings as the layer below env and flags.
     const std::string home = moocode_home();
     migrate_legacy(home);
+
+    // First-run setup: with no settings.toml and no endpoint/key supplied via
+    // flag or LLM_* env, walk the user through choosing a provider, entering a
+    // key, and probing its model list. It persists settings.toml + credentials.toml
+    // under `home`, so the resolution below transparently adopts the result.
+    {
+        const char* env_key = std::getenv("LLM_API_KEY");
+        const char* env_base = std::getenv("LLM_BASE_URL");
+        const bool has_explicit_config =
+            cli["base-url"].was_set() || cli["api-key"].was_set() ||
+            cli["profile"].was_set() || (env_key && *env_key) ||
+            (env_base && *env_base);
+        if (onboarding_needed(home, interactive, has_explicit_config))
+            run_onboarding(home, std::cin, std::cout, default_model_lister);
+    }
+
     const Settings settings = load_settings(home);
 
     // Resolve config with precedence flags > LLM_* env > profile/preset >
@@ -592,6 +641,10 @@ int main(int argc, char** argv) {
     opts.rtk = rtk_available && rtk_on;
 
     ToolRegistry reg;
+    // Optional, on-demand capabilities. Skills are registered (but not loaded)
+    // below; the model loads one via load_skill, the user via /skill. Must
+    // outlive the agent and the TUI, which borrow it by reference/pointer.
+    SkillRegistry skills;
     register_builtin_tools(reg, opts);
     reg.add(web_search_tool(search_config_from_env(home)));
     reg.add(web_fetch_tool());
@@ -775,8 +828,29 @@ int main(int argc, char** argv) {
                                     .max_tokens = 0};
             return make_provider(conn, GenerationParams{});
         };
-        reg.add(spawn_subagent_tool(std::move(scfg)));
+        // The unrestricted tool is always advertised. The restricted variant is
+        // kept out of the default tool list (and thus the system prompt) and is
+        // pulled in on demand via the "spawn_subagent_restricted" skill below,
+        // which captures a copy of this same config.
+        reg.add(spawn_subagent_tool(scfg));
+        skills.add(Skill{
+            .name = "spawn_subagent_restricted",
+            .description =
+                "Adds spawn_subagent_restricted: spawn sub-agents with a "
+                "restricted tool set and an explicit auto-approval list.",
+            .load = [scfg](ToolRegistry& r)
+                -> std::expected<std::string, Error> {
+                r.add(spawn_subagent_restricted_tool(scfg));
+                return std::string(
+                    "loaded — spawn_subagent_restricted is now available");
+            }});
     }
+
+    // The load_skill tool is always advertised so the model can pull in optional
+    // skills mid-run. Its description snapshots the skills registered above, so
+    // it must be built after every skill is registered. Captures &skills and
+    // &reg by reference — both live for the whole session.
+    reg.add(load_skill_tool(skills, reg));
 
     // Fold live context (tools, cwd, ls, time, OS) into the prompt template.
     // This runs after spawn_subagent registration so {TOOLS} includes it.
@@ -819,7 +893,7 @@ int main(int argc, char** argv) {
                      active_profile};
         info.debug = cli["debug"].was_set();
         int code = run_tui(agent, yes ? nullptr : &perms, info, sink, &question_gate,
-                         on_sub_activity, on_sub_text);
+                         on_sub_activity, on_sub_text, &skills, &reg);
         http::global_cleanup();
         return code;
     }

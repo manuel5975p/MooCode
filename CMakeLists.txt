@@ -60,29 +60,21 @@ if(MOOCODE_BUNDLED_CURL)
 else()
   find_package(CURL REQUIRED)
 endif()
-# nlohmann_json ships config under /usr/share/cmake on systems where CMake
-# doesn't search there by default; hint it.
-if(NOT nlohmann_json_DIR AND EXISTS /usr/share/cmake/nlohmann_json)
-  set(nlohmann_json_DIR /usr/share/cmake/nlohmann_json)
+# nlohmann_json: ALWAYS the vendored single header at third_party/nlohmann/
+# json.hpp — never find_package() / the system package. This pins the exact
+# version the tree is tested against and avoids the host include dir (/usr/
+# include) leaking the host libc headers into a cross build. The header is
+# included as <nlohmann/json.hpp>, and third_party/ already carries the
+# "nlohmann/" subdirectory, so it is the include root directly.
+set(_njson_inc ${PROJECT_SOURCE_DIR}/third_party)
+if(NOT EXISTS ${_njson_inc}/nlohmann/json.hpp)
+  message(FATAL_ERROR
+    "vendored nlohmann json.hpp missing at ${_njson_inc}/nlohmann/json.hpp")
 endif()
-find_package(nlohmann_json QUIET)
-# Fall back to the bundled single-header json.hpp when no installed package is
-# found, so the build works on machines without the nlohmann_json dev package.
-# The header is included as <nlohmann/json.hpp>, so stage it under a generated
-# include root that carries the expected "nlohmann/" subdirectory.
-if(NOT nlohmann_json_FOUND)
-  if(NOT EXISTS ${PROJECT_SOURCE_DIR}/json.hpp)
-    message(FATAL_ERROR
-      "nlohmann_json package not found and bundled json.hpp is missing")
-  endif()
-  set(_njson_inc ${PROJECT_BINARY_DIR}/bundled-nlohmann)
-  configure_file(${PROJECT_SOURCE_DIR}/json.hpp
-                 ${_njson_inc}/nlohmann/json.hpp COPYONLY)
-  add_library(nlohmann_json INTERFACE)
-  target_include_directories(nlohmann_json INTERFACE ${_njson_inc})
-  add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
-  message(STATUS "nlohmann_json: using bundled json.hpp (${PROJECT_SOURCE_DIR}/json.hpp)")
-endif()
+add_library(nlohmann_json INTERFACE)
+target_include_directories(nlohmann_json INTERFACE ${_njson_inc})
+add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+message(STATUS "nlohmann_json: using vendored ${_njson_inc}/nlohmann/json.hpp")
 
 # FTXUI: the terminal-UI toolkit behind the interactive TUI. Fetched and built
 # from the pinned v6.1.9 release tarball (examples/docs/tests off). Declared
@@ -107,7 +99,12 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 if(MOOCODE_WERROR)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
 endif()
-if(MOOCODE_SANITIZE)
+if(MOOCODE_SANITIZE AND WIN32)
+  # The MinGW-w64 / w64devkit toolchains ship no ASan/UBSan/TSan runtime, so a
+  # sanitizer request can't be honoured there — fail loudly rather than emit
+  # flags that won't link.
+  message(FATAL_ERROR "MOOCODE_SANITIZE is not supported on Windows (MinGW has no sanitizer runtime)")
+elseif(MOOCODE_SANITIZE)
   # MOOCODE_SANITIZE is a CMake list ("address;undefined"); -fsanitize wants a
   # comma-separated value, so join before handing it to the compiler/linker.
   string(REPLACE ";" "," _MOOCODE_SANITIZE_FLAG "${MOOCODE_SANITIZE}")

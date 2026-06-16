@@ -75,6 +75,10 @@ target_include_directories(agent_persist
                            PRIVATE ${PROJECT_SOURCE_DIR})  # for "toml.hpp"
 target_link_libraries(agent_persist PUBLIC agent_types)
 
+# --- agent_onboarding: first-run setup wizard (settings.toml + credentials) ---
+add_library(agent_onboarding STATIC agent/onboarding.cpp)
+target_link_libraries(agent_onboarding PUBLIC agent_types agent_provider agent_persist)
+
 # --- agent_mentions: @-mention expansion (preprocesses user prompts) -------
 add_library(agent_mentions STATIC agent/mentions.cpp)
 target_link_libraries(agent_mentions PUBLIC agent_types)
@@ -92,18 +96,33 @@ target_link_libraries(agent_question PUBLIC agent_tools)
 add_library(agent_subagent STATIC agent/subagent_tool.cpp)
 target_link_libraries(agent_subagent PUBLIC agent_core agent_tools)
 
+# --- agent_skills: dynamically loadable skills + the load_skill tool ----------
+add_library(agent_skills STATIC agent/skills.cpp)
+target_link_libraries(agent_skills PUBLIC agent_tools PRIVATE agent_json)
+
 # --- agent_syntax: pure code-block syntax highlighter (no I/O, no deps) -------
 add_library(agent_syntax STATIC agent/syntax_highlight.cpp)
 target_include_directories(agent_syntax PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(agent_syntax PUBLIC agent_types)
 
 # --- agent_tui: full-screen FTXUI interactive UI -----------------------------
+# tui_platform_{win,posix}.cpp isolate the OS clipboard/console code so tui.cpp
+# never pulls in <windows.h>; compile the one matching the host.
+if(WIN32)
+  set(_TUI_PLATFORM agent/tui_platform_win.cpp)
+else()
+  set(_TUI_PLATFORM agent/tui_platform_posix.cpp)
+endif()
 add_library(agent_tui STATIC agent/tui.cpp agent/tui_text.cpp agent/tui_worker.cpp
-                      agent/tui_slash.cpp agent/settings_editor.cpp)
+                      agent/tui_slash.cpp agent/settings_editor.cpp
+                      agent/tui_glyphs.cpp ${_TUI_PLATFORM})
 target_link_libraries(agent_tui PUBLIC agent_core agent_permissions agent_diff
-                      agent_tools agent_question
+                      agent_tools agent_question agent_skills
                       PRIVATE agent_persist agent_mentions agent_syntax agent_json
                           ftxui::screen ftxui::dom ftxui::component)
+if(WIN32)
+  target_link_libraries(agent_tui PRIVATE user32)  # Win32 clipboard API
+endif()
 
 # --- moocode: the CLI executable --------------------------------------------
 add_executable(moocode agent/main.cpp)
@@ -114,4 +133,4 @@ target_include_directories(moocode PRIVATE ${PROJECT_SOURCE_DIR})
 # so only the libraries not reachable through it are listed explicitly. Listing
 # the transitively-linked archives again makes the linker warn about (and ignore)
 # duplicate libraries.
-target_link_libraries(moocode PRIVATE agent_tui agent_search agent_gitea agent_git agent_subagent agent_lsp agent_question)
+target_link_libraries(moocode PRIVATE agent_tui agent_search agent_gitea agent_git agent_subagent agent_lsp agent_question agent_onboarding)

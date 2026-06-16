@@ -88,6 +88,17 @@ struct SubagentConfig {
 // Build the spawn_subagent tool.
 Tool spawn_subagent_tool(SubagentConfig cfg);
 
+// Build the spawn_subagent_restricted tool: like spawn_subagent, but the parent
+// passes an explicit tool subset and a per-sub-agent auto-approve allowlist.
+//   `tools`       — array of tool names the sub-agent may see. Omit/empty =>
+//                   inherit every tool (same as spawn_subagent).
+//   `permissions` — array of tool names the sub-agent may run WITHOUT prompting.
+//                   Tools not listed fall back to the parent's approval gate.
+// Not registered by default (kept out of the system prompt); loaded on demand
+// via the "spawn_subagent_restricted" skill. Shares SubagentConfig with the
+// unrestricted tool.
+Tool spawn_subagent_restricted_tool(SubagentConfig cfg);
+
 }  // namespace moocode
 
 #endif  // MOOCODE_SUBAGENT_TOOL_HPP

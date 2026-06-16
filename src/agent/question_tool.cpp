@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "agent/json_util.hpp"
+#include "agent/platform.hpp"  // kConsoleInDevice
 
 namespace moocode {
 
@@ -149,8 +150,9 @@ Tool ask_user_tool(QuestionGate* gate) {
                          "or press Enter to skip: ");
             std::fflush(stderr);
 
-            // Try /dev/tty first (works even when stdin is piped).
-            FILE* tty = std::fopen("/dev/tty", "r");
+            // Try the console device first (works even when stdin is piped):
+            // "/dev/tty" on POSIX, "CONIN$" on Windows.
+            FILE* tty = std::fopen(kConsoleInDevice, "r");
             if (!tty) tty = stdin;
 
             std::string line;

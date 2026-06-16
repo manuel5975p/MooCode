@@ -76,6 +76,12 @@ set_tests_properties(test_tui_slash PROPERTIES TIMEOUT 30)
 moocode_add_test(test_settings_editor test_settings_editor.cpp agent_tui)
 set_tests_properties(test_settings_editor PROPERTIES TIMEOUT 30)
 
+# test_onboarding: first-run wizard (pure helpers + driver over injected streams
+# and a fake model-lister, fully offline)
+moocode_add_test(test_onboarding test_onboarding.cpp agent_onboarding agent_persist)
+target_link_libraries(test_onboarding PRIVATE Threads::Threads)
+set_tests_properties(test_onboarding PROPERTIES TIMEOUT 30)
+
 # test_question: QuestionGate sync + ask_user tool parsing
 moocode_add_test(test_question test_question.cpp agent_question)
 target_link_libraries(test_question PRIVATE Threads::Threads)
@@ -94,3 +100,13 @@ set_tests_properties(test_compact PROPERTIES TIMEOUT 10)
 # test_subagent: spawn_subagent model/provider override (offline, fake provider)
 moocode_add_test(test_subagent test_subagent.cpp agent_subagent)
 set_tests_properties(test_subagent PROPERTIES TIMEOUT 30)
+
+# test_subagent_restricted: spawn_subagent_restricted tool/permission filtering
+moocode_add_test(test_subagent_restricted test_subagent_restricted.cpp agent_subagent)
+target_link_libraries(test_subagent_restricted PRIVATE Threads::Threads)
+set_tests_properties(test_subagent_restricted PROPERTIES TIMEOUT 30)
+
+# test_skills: SkillRegistry + load_skill tool (offline)
+moocode_add_test(test_skills test_skills.cpp agent_skills)
+target_link_libraries(test_skills PRIVATE Threads::Threads)
+set_tests_properties(test_skills PROPERTIES TIMEOUT 10)

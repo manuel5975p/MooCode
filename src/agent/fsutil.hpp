@@ -29,9 +29,13 @@ inline std::expected<std::filesystem::path, Error> resolve_in_root(
 
     const std::string b = base.string();
     const std::string t = target.string();
+    // The byte after the matched root prefix must be a path separator so that
+    // "/rootfoo" cannot pass as living under "/root". Accept both '/' and the
+    // native separator (Windows weakly_canonical yields backslashes).
+    constexpr char kSep = static_cast<char>(fs::path::preferred_separator);
     bool inside = (t == b) ||
                   (t.size() > b.size() && t.compare(0, b.size(), b) == 0 &&
-                   t[b.size()] == '/');
+                   (t[b.size()] == '/' || t[b.size()] == kSep));
     if (!inside)
         return std::unexpected(Error{.msg = "path escapes the sandbox root: " + rel, .code = 0});
     return target;

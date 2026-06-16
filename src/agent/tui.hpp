@@ -29,6 +29,8 @@ class Agent;
 struct FileChange;
 class QuestionGate;
 class Permissions;
+class SkillRegistry;
+class ToolRegistry;
 }  // namespace moocode
 
 namespace moocode {
@@ -350,11 +352,14 @@ private:
 // TUI's file-change handler so write_file/edit_file render colored diffs in the
 // log (the tool closures call through *sink). Returns a process exit code.
 // pre: stdout is a tty.
+// When `skills` and `tool_reg` are both non-null, the `/skill` command lets the
+// user load an optional skill into the live tool registry between turns.
 int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             std::shared_ptr<std::function<void(const FileChange&)>> sink = {},
             QuestionGate* question_gate_ptr = {},
             std::shared_ptr<SubagentActivityFn> on_subagent_activity = {},
-            std::shared_ptr<SubagentTextFn> on_subagent_text = {});
+            std::shared_ptr<SubagentTextFn> on_subagent_text = {},
+            SkillRegistry* skills = {}, ToolRegistry* tool_reg = {});
 
 }  // namespace moocode
 

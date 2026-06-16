@@ -4,11 +4,21 @@
 #include "agent/lsp_detail.hpp"  // Framed, try_parse_frame, frame
 #include "agent/strutil.hpp"  // trim_sv, hex_val, hex_digit
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <array>
 #include <cerrno>
@@ -218,6 +228,46 @@ const char* language_id(const fs::path& p) {
     if (e == ".mm") return "objective-cpp";
     return "cpp";
 }
+
+#ifdef _WIN32
+// UTF-8 -> UTF-16 for the wide Win32 APIs.
+std::wstring win_widen(const std::string& s) {
+    if (s.empty()) return {};
+    int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+                                  nullptr, 0);
+    std::wstring w(static_cast<std::size_t>(n < 0 ? 0 : n), L'\0');
+    if (n > 0)
+        ::MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+                              w.data(), n);
+    return w;
+}
+
+// Join argv into a single CreateProcessW command line, quoting per the
+// CommandLineToArgvW rules (escape embedded quotes and the backslashes before
+// them). clangd's args are path-like, so quoting handles spaces in paths.
+std::wstring win_command_line(const std::vector<std::string>& args) {
+    std::wstring cl;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (i) cl += L' ';
+        std::wstring a = win_widen(args[i]);
+        if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+            cl += a;
+            continue;
+        }
+        cl += L'"';
+        for (auto it = a.begin();; ++it) {
+            std::size_t bs = 0;
+            while (it != a.end() && *it == L'\\') { ++it; ++bs; }
+            if (it == a.end()) { cl.append(bs * 2, L'\\'); break; }
+            if (*it == L'"') { cl.append(bs * 2 + 1, L'\\'); cl += L'"'; }
+            else { cl.append(bs, L'\\'); cl += *it; }
+        }
+        cl += L'"';
+    }
+    return cl;
+}
+#endif
+
 }  // namespace
 
 ClangdSession::~ClangdSession() {
@@ -231,6 +281,88 @@ ClangdSession::~ClangdSession() {
 }
 
 std::expected<void, Error> ClangdSession::spawn() {
+    // The clangd command line is identical on both platforms.
+    std::vector<std::string> args{cfg_.server_path, "--background-index",
+                                  "--limit-references=2000", "--limit-results=200",
+                                  "--pch-storage=memory"};
+    if (cfg_.compile_commands_dir)
+        args.push_back("--compile-commands-dir=" + cfg_.compile_commands_dir->string());
+    std::string root_str = cfg_.root.string();
+
+#ifdef _WIN32
+    // Two pipes: parent->child stdin, child stdout->parent. The read end of the
+    // stdin pipe and the write end of the stdout pipe are inheritable.
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE in_rd = nullptr, in_wr = nullptr, out_rd = nullptr, out_wr = nullptr;
+    if (!::CreatePipe(&in_rd, &in_wr, &sa, 0))
+        return std::unexpected(Error{.msg = "CreatePipe failed", .code = 0});
+    if (!::CreatePipe(&out_rd, &out_wr, &sa, 0)) {
+        ::CloseHandle(in_rd); ::CloseHandle(in_wr);
+        return std::unexpected(Error{.msg = "CreatePipe failed", .code = 0});
+    }
+    ::SetHandleInformation(in_wr, HANDLE_FLAG_INHERIT, 0);   // our write end private
+    ::SetHandleInformation(out_rd, HANDLE_FLAG_INHERIT, 0);  // our read end private
+
+    HANDLE job = ::CreateJobObjectW(nullptr, nullptr);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        ::SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jeli,
+                                  sizeof(jeli));
+    }
+
+    std::wstring cmdline = win_command_line(args);
+    std::wstring cwd_w = root_str.empty() ? std::wstring() : cfg_.root.wstring();
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = in_rd;
+    si.hStdOutput = out_wr;
+    si.hStdError = ::GetStdHandle(STD_ERROR_HANDLE);  // clangd diagnostics -> our stderr/NUL
+    PROCESS_INFORMATION pi{};
+    BOOL ok = ::CreateProcessW(
+        nullptr, cmdline.data(), nullptr, nullptr, /*bInheritHandles=*/TRUE,
+        CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr,
+        cwd_w.empty() ? nullptr : cwd_w.c_str(), &si, &pi);
+    ::CloseHandle(in_rd);   // child owns these now
+    ::CloseHandle(out_wr);
+    if (!ok) {
+        ::CloseHandle(in_wr); ::CloseHandle(out_rd);
+        if (job) ::CloseHandle(job);
+        return std::unexpected(Error{
+            .msg = "failed to start clangd '" + cfg_.server_path +
+                   "' (install clangd or set CLANGD_PATH)",
+            .code = 0});
+    }
+    if (job) ::AssignProcessToJobObject(job, pi.hProcess);
+    ::ResumeThread(pi.hThread);
+    ::CloseHandle(pi.hThread);
+
+    proc_ = pi.hProcess;
+    job_ = job;
+    to_child_w_ = in_wr;
+    from_child_r_ = out_rd;
+    reader_done_ = false;
+    read_buf_.clear();
+    // Reader thread: drain clangd's stdout into read_buf_ until the pipe breaks.
+    HANDLE rd_handle = out_rd;
+    reader_ = std::thread([this, rd_handle] {
+        std::array<char, 8192> buf;
+        DWORD n = 0;
+        for (;;) {
+            if (!::ReadFile(rd_handle, buf.data(), static_cast<DWORD>(buf.size()),
+                            &n, nullptr) ||
+                n == 0)
+                break;
+            std::lock_guard<std::mutex> lk(read_mtx_);
+            read_buf_.append(buf.data(), static_cast<std::size_t>(n));
+            read_cv_.notify_one();
+        }
+        std::lock_guard<std::mutex> lk(read_mtx_);
+        reader_done_ = true;
+        read_cv_.notify_one();
+    });
+#else
     // Ignore SIGPIPE once: writing to a clangd that has exited must not kill us.
     static std::once_flag sigpipe_once;
     std::call_once(sigpipe_once, [] { ::signal(SIGPIPE, SIG_IGN); });
@@ -246,16 +378,10 @@ std::expected<void, Error> ClangdSession::spawn() {
     }
 
     // Build argv in the parent so the child path is async-signal-safe (no STL).
-    std::vector<std::string> args{cfg_.server_path, "--background-index",
-                                  "--limit-references=2000", "--limit-results=200",
-                                  "--pch-storage=memory"};
-    if (cfg_.compile_commands_dir)
-        args.push_back("--compile-commands-dir=" + cfg_.compile_commands_dir->string());
     std::vector<char*> argv;
     argv.reserve(args.size() + 1);
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
-    std::string root_str = cfg_.root.string();
 
     pid_t pid = ::fork();
     if (pid < 0) {
@@ -284,6 +410,8 @@ std::expected<void, Error> ClangdSession::spawn() {
     if (int fl = ::fcntl(from_child_, F_GETFL, 0); fl >= 0)
         ::fcntl(from_child_, F_SETFL, fl | O_NONBLOCK);
     pid_ = pid;
+#endif
+
     alive_ = true;
     initialized_ = false;
     index_done_ = false;
@@ -295,6 +423,27 @@ std::expected<void, Error> ClangdSession::spawn() {
 }
 
 void ClangdSession::kill_and_reap() {
+#ifdef _WIN32
+    if (to_child_w_) { ::CloseHandle(to_child_w_); to_child_w_ = nullptr; }  // EOF -> clangd exits
+    if (proc_) {
+        // Give clangd a moment to exit on its closed stdin, then kill the tree.
+        if (::WaitForSingleObject(proc_, 300) != WAIT_OBJECT_0) {
+            if (job_) ::TerminateJobObject(job_, 1);
+            else ::TerminateProcess(proc_, 1);
+            ::WaitForSingleObject(proc_, INFINITE);
+        }
+        ::CloseHandle(proc_);
+        proc_ = nullptr;
+    }
+    if (job_) { ::CloseHandle(job_); job_ = nullptr; }
+    if (reader_.joinable()) reader_.join();  // pipe broken -> reader has returned
+    if (from_child_r_) { ::CloseHandle(from_child_r_); from_child_r_ = nullptr; }
+    {
+        std::lock_guard<std::mutex> lk(read_mtx_);
+        read_buf_.clear();
+        reader_done_ = false;
+    }
+#else
     if (to_child_ >= 0) { ::close(to_child_); to_child_ = -1; }  // EOF -> clangd exits
     if (pid_ > 0) {
         ::kill(-pid_, SIGTERM);
@@ -312,17 +461,38 @@ void ClangdSession::kill_and_reap() {
         pid_ = -1;
     }
     if (from_child_ >= 0) { ::close(from_child_); from_child_ = -1; }
+#endif
     alive_ = false;
     initialized_ = false;
 }
 
 std::expected<void, Error> ClangdSession::write_message(const nlohmann::json& msg) {
+    std::string wire = frame(msg);
+    return write_raw(wire.data(), wire.size());
+}
+
+std::expected<void, Error> ClangdSession::write_raw(const char* data, std::size_t len) {
+#ifdef _WIN32
+    if (!to_child_w_)
+        return std::unexpected(Error{.msg = "clangd is not running", .code = 0});
+    std::size_t off = 0;
+    while (off < len) {
+        DWORD wrote = 0;
+        if (!::WriteFile(to_child_w_, data + off, static_cast<DWORD>(len - off),
+                         &wrote, nullptr) ||
+            wrote == 0) {
+            alive_ = false;
+            return std::unexpected(Error{.msg = "clangd write failed", .code = 0});
+        }
+        off += wrote;
+    }
+    return {};
+#else
     if (to_child_ < 0)
         return std::unexpected(Error{.msg = "clangd is not running", .code = 0});
-    std::string wire = frame(msg);
     std::size_t off = 0;
-    while (off < wire.size()) {
-        ssize_t n = ::write(to_child_, wire.data() + off, wire.size() - off);
+    while (off < len) {
+        ssize_t n = ::write(to_child_, data + off, len - off);
         if (n < 0) {
             if (errno == EINTR) continue;
             alive_ = false;
@@ -331,6 +501,42 @@ std::expected<void, Error> ClangdSession::write_message(const nlohmann::json& ms
         off += static_cast<std::size_t>(n);
     }
     return {};
+#endif
+}
+
+ClangdSession::ReadStep ClangdSession::read_step(int slice_ms, std::string& err) {
+#ifdef _WIN32
+    std::unique_lock<std::mutex> lk(read_mtx_);
+    if (read_buf_.empty() && !reader_done_)
+        read_cv_.wait_for(lk, std::chrono::milliseconds(slice_ms));
+    if (!read_buf_.empty()) {
+        in_buf_.append(read_buf_);
+        read_buf_.clear();
+        return ReadStep::Data;
+    }
+    return reader_done_ ? ReadStep::Eof : ReadStep::Timeout;
+#else
+    pollfd pfd{from_child_, POLLIN, 0};
+    int pr = ::poll(&pfd, 1, slice_ms);
+    if (pr < 0) {
+        if (errno == EINTR) return ReadStep::Timeout;
+        err = std::string("clangd poll: ") + std::strerror(errno);
+        return ReadStep::Error;
+    }
+    if (pr == 0) return ReadStep::Timeout;
+
+    std::array<char, 8192> buf;
+    ssize_t n = ::read(from_child_, buf.data(), buf.size());
+    if (n == 0) return ReadStep::Eof;
+    if (n < 0) {
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+            return ReadStep::Timeout;
+        err = std::string("clangd read: ") + std::strerror(errno);
+        return ReadStep::Error;
+    }
+    in_buf_.append(buf.data(), static_cast<std::size_t>(n));
+    return ReadStep::Data;
+#endif
 }
 
 void ClangdSession::dispatch(const nlohmann::json& msg) {
@@ -432,36 +638,32 @@ std::expected<nlohmann::json, Error> ClangdSession::pump_until(
         }
         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
         int slice = static_cast<int>(remaining < 200 ? remaining : 200);
-        pollfd pfd{from_child_, POLLIN, 0};
-        int pr = ::poll(&pfd, 1, slice);
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            alive_ = false;
-            return std::unexpected(Error{.msg = std::string("clangd poll: ") + std::strerror(errno), .code = 0});
-        }
-        if (pr == 0) continue;  // re-check deadline/cancel
 
-        std::array<char, 8192> buf;
-        ssize_t n = ::read(from_child_, buf.data(), buf.size());
-        if (n == 0) {  // EOF: clangd exited
-            int st = 0;
-            bool exited = pid_ > 0 && ::waitpid(pid_, &st, WNOHANG) == pid_;
-            alive_ = false;
-            if (exited && WIFEXITED(st) && WEXITSTATUS(st) == 127) {
-                pid_ = -1;
-                return std::unexpected(Error{
-                    .msg = "clangd not found or failed to exec '" + cfg_.server_path +
-                           "' (install clangd or set CLANGD_PATH)",
-                    .code = 0});
+        std::string err;
+        switch (read_step(slice, err)) {
+            case ReadStep::Data:
+                break;  // new bytes in in_buf_: loop back to frame them
+            case ReadStep::Timeout:
+                continue;  // re-check deadline/cancel
+            case ReadStep::Error:
+                alive_ = false;
+                return std::unexpected(Error{.msg = err, .code = 0});
+            case ReadStep::Eof: {  // clangd closed stdout / exited
+                alive_ = false;
+#ifndef _WIN32
+                int st = 0;
+                bool exited = pid_ > 0 && ::waitpid(pid_, &st, WNOHANG) == pid_;
+                if (exited && WIFEXITED(st) && WEXITSTATUS(st) == 127) {
+                    pid_ = -1;
+                    return std::unexpected(Error{
+                        .msg = "clangd not found or failed to exec '" + cfg_.server_path +
+                               "' (install clangd or set CLANGD_PATH)",
+                        .code = 0});
+                }
+#endif
+                return std::unexpected(Error{.msg = "clangd exited unexpectedly", .code = 0});
             }
-            return std::unexpected(Error{.msg = "clangd exited unexpectedly", .code = 0});
         }
-        if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
-            alive_ = false;
-            return std::unexpected(Error{.msg = std::string("clangd read: ") + std::strerror(errno), .code = 0});
-        }
-        in_buf_.append(buf.data(), static_cast<std::size_t>(n));
     }
 }
 
@@ -505,7 +707,11 @@ std::expected<void, Error> ClangdSession::handshake() {
         {"window", {{"workDoneProgress", true}}}};
 
     nlohmann::json params{
+#ifdef _WIN32
+        {"processId", static_cast<int>(::GetCurrentProcessId())},
+#else
         {"processId", static_cast<int>(::getpid())},
+#endif
         {"clientInfo", {{"name", "moocode"}}},
         {"rootUri", root_uri},
         {"rootPath", canon.string()},

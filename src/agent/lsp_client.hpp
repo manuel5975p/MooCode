@@ -10,10 +10,13 @@
 // The pure helpers (frame parsing, file:// <-> path, symbol->position math) carry
 // no I/O and are unit-tested directly.
 
+#ifndef _WIN32
 #include <sys/types.h>  // pid_t
+#endif
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <expected>
 #include <filesystem>
@@ -23,6 +26,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -142,6 +146,13 @@ private:
         std::optional<int> want_id, std::chrono::steady_clock::time_point deadline);
     void dispatch(const nlohmann::json& msg);
 
+    // Platform stdio primitives (POSIX pipes vs. Win32 handles + reader thread).
+    enum class ReadStep { Data, Timeout, Eof, Error };
+    // Write all `len` bytes to clangd's stdin. Error on a broken pipe.
+    std::expected<void, Error> write_raw(const char* data, std::size_t len);
+    // Wait up to `slice_ms` for clangd output; append any bytes to in_buf_.
+    ReadStep read_step(int slice_ms, std::string& err);
+
     // Sync `abs`, then issue a textDocument/position request, merging `extra`
     // (e.g. references context or rename newName) into the params object.
     std::expected<nlohmann::json, Error> doc_pos_request(
@@ -150,9 +161,23 @@ private:
 
     std::mutex io_mtx_;  // see io_mutex(): serialises concurrent tool access
     LspConfig cfg_;
+#ifdef _WIN32
+    // Win32 has no poll()-able pipes, so a reader thread drains clangd's stdout
+    // into read_buf_ and read_step() hands those bytes to the framing loop.
+    void* proc_ = nullptr;          // HANDLE: child process
+    void* job_ = nullptr;           // HANDLE: job object (kills the tree)
+    void* to_child_w_ = nullptr;    // HANDLE: we write clangd's stdin
+    void* from_child_r_ = nullptr;  // HANDLE: reader thread reads clangd's stdout
+    std::thread reader_;
+    std::mutex read_mtx_;
+    std::condition_variable read_cv_;
+    std::string read_buf_;          // bytes the reader thread has pulled
+    bool reader_done_ = false;      // clangd closed stdout / reader exited
+#else
     pid_t pid_ = -1;
     int to_child_ = -1;    // we write clangd's stdin
     int from_child_ = -1;  // we read clangd's stdout (O_NONBLOCK)
+#endif
     bool alive_ = false;
     bool initialized_ = false;
     bool index_done_ = false;

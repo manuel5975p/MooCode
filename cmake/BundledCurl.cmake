@@ -41,14 +41,28 @@ set(_bc_common_cmake_args
   -DCMAKE_INSTALL_PREFIX=${_bc_install}
   -DCMAKE_INSTALL_LIBDIR=lib                 # never lib64, so paths are stable
 )
+# Propagate the cross toolchain (and a generator matching the outer build) to
+# the nested CMake sub-builds, so zlib/nghttp2/curl cross-compile for Windows
+# too. Absolute path: ExternalProject runs the sub-cmake from its own dir.
+if(CMAKE_TOOLCHAIN_FILE)
+  get_filename_component(_bc_toolchain "${CMAKE_TOOLCHAIN_FILE}" ABSOLUTE
+                         BASE_DIR "${CMAKE_BINARY_DIR}")
+  list(APPEND _bc_common_cmake_args "-DCMAKE_TOOLCHAIN_FILE=${_bc_toolchain}")
+endif()
 
 # --- zlib (gzip/deflate for CURLOPT_ACCEPT_ENCODING) ------------------------
+# zlib's CMake names the static archive `z` on UNIX but `zlibstatic` on Windows.
+if(WIN32)
+  set(_bc_zlib_a ${_bc_lib}/libzlibstatic.a)
+else()
+  set(_bc_zlib_a ${_bc_lib}/libz.a)
+endif()
 ExternalProject_Add(zlib_ep
   URL              https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
   URL_HASH         SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
   DOWNLOAD_DIR     ${_bc_download}
   CMAKE_ARGS       ${_bc_common_cmake_args}
-  BUILD_BYPRODUCTS ${_bc_lib}/libz.a
+  BUILD_BYPRODUCTS ${_bc_zlib_a}
   UPDATE_DISCONNECTED ON
 )
 
@@ -67,6 +81,9 @@ ExternalProject_Add(nghttp2_ep
 )
 
 # --- OpenSSL (TLS; Perl Configure, no CMake) --------------------------------
+# Skipped on Windows: there curl uses Schannel (the OS TLS stack), so no OpenSSL
+# sub-build is needed and the Win32 crypto libs are linked instead (see below).
+if(NOT WIN32)
 # no-apps/no-tests/no-docs slash build time; no-shared gives static archives;
 # --libdir=lib keeps install paths predictable.
 #
@@ -108,31 +125,48 @@ ExternalProject_Add(openssl_ep
   UPDATE_DISCONNECTED ON
 )
 
+endif()  # NOT WIN32 (OpenSSL sub-build)
+
 # --- CA trust store: bake the system bundle into the static curl ------------
 # A statically linked curl has no distro default; point it at whatever the host
-# ships so HTTPS verification works without per-call CURLOPT_CAINFO.
+# ships so HTTPS verification works without per-call CURLOPT_CAINFO. On Windows
+# Schannel uses the OS certificate store, so no bundle is needed.
 set(_bc_ca_bundle "")
-foreach(_c /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
-           /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem)
-  if(EXISTS ${_c})
-    set(_bc_ca_bundle ${_c})
-    break()
-  endif()
-endforeach()
 set(_bc_ca_path "")
-if(IS_DIRECTORY /etc/ssl/certs)
-  set(_bc_ca_path /etc/ssl/certs)
-endif()
-if(_bc_ca_bundle)
-  message(STATUS "BundledCurl: CA bundle = ${_bc_ca_bundle}")
-else()
-  message(WARNING "BundledCurl: no system CA bundle found; HTTPS may fail "
-                  "unless CURLOPT_CAINFO / SSL_CERT_FILE is set at runtime")
+if(NOT WIN32)
+  foreach(_c /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt
+             /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem)
+    if(EXISTS ${_c})
+      set(_bc_ca_bundle ${_c})
+      break()
+    endif()
+  endforeach()
+  if(IS_DIRECTORY /etc/ssl/certs)
+    set(_bc_ca_path /etc/ssl/certs)
+  endif()
+  if(_bc_ca_bundle)
+    message(STATUS "BundledCurl: CA bundle = ${_bc_ca_bundle}")
+  else()
+    message(WARNING "BundledCurl: no system CA bundle found; HTTPS may fail "
+                    "unless CURLOPT_CAINFO / SSL_CERT_FILE is set at runtime")
+  endif()
 endif()
 
 # --- curl (HTTP/HTTPS only; everything else disabled) -----------------------
+# TLS backend differs by platform: static OpenSSL on POSIX, native Schannel on
+# Windows (so no OpenSSL archives are needed in the link there).
+if(WIN32)
+  # Schannel TLS; NGHTTP2_STATICLIB tells curl's http2.c to declare the nghttp2
+  # symbols as plain statics (not dllimport) so they resolve against libnghttp2.a.
+  set(_bc_curl_tls -DCURL_USE_SCHANNEL=ON -DCMAKE_C_FLAGS=-DNGHTTP2_STATICLIB)
+  set(_bc_curl_deps zlib_ep nghttp2_ep)
+else()
+  set(_bc_curl_tls -DCURL_USE_OPENSSL=ON -DOPENSSL_ROOT_DIR=${_bc_install}
+                   -DOPENSSL_USE_STATIC_LIBS=ON)
+  set(_bc_curl_deps zlib_ep nghttp2_ep openssl_ep)
+endif()
 ExternalProject_Add(curl_ep
-  DEPENDS          zlib_ep nghttp2_ep openssl_ep
+  DEPENDS          ${_bc_curl_deps}
   URL              https://curl.se/download/curl-8.15.0.tar.xz
   URL_HASH         SHA256=6cd0a8a5b126ddfda61c94dc2c3fc53481ba7a35461cf7c5ab66aa9d6775b609
   DOWNLOAD_DIR     ${_bc_download}
@@ -141,10 +175,8 @@ ExternalProject_Add(curl_ep
                    -DBUILD_CURL_EXE=OFF
                    -DBUILD_STATIC_LIBS=ON
                    -DBUILD_TESTING=OFF
-                   # TLS via our static OpenSSL
-                   -DCURL_USE_OPENSSL=ON
-                   -DOPENSSL_ROOT_DIR=${_bc_install}
-                   -DOPENSSL_USE_STATIC_LIBS=ON
+                   # TLS backend (OpenSSL on POSIX, Schannel on Windows)
+                   ${_bc_curl_tls}
                    # zlib + HTTP/2, both static
                    -DCURL_ZLIB=ON
                    -DZLIB_ROOT=${_bc_install}
@@ -182,14 +214,27 @@ set_target_properties(CURL::libcurl PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES ${_bc_inc}
   INTERFACE_COMPILE_DEFINITIONS CURL_STATICLIB
 )
-target_link_libraries(CURL::libcurl INTERFACE
-  ${_bc_lib}/libnghttp2.a
-  ${_bc_lib}/libssl.a
-  ${_bc_lib}/libcrypto.a
-  ${_bc_lib}/libz.a
-  Threads::Threads
-  ${CMAKE_DL_LIBS}
-)
+if(WIN32)
+  # Schannel build: no OpenSSL archives; link the Win32 socket + crypto libs
+  # that a static libcurl with Schannel/SSPI references.
+  target_link_libraries(CURL::libcurl INTERFACE
+    ${_bc_lib}/libnghttp2.a
+    ${_bc_zlib_a}
+    # ws2_32: sockets; secur32: Schannel SSPI; crypt32/bcrypt: cert store + crypto;
+    # iphlpapi: if_nametoindex; wldap32/advapi32/normaliz: curl misc deps.
+    ws2_32 secur32 crypt32 bcrypt iphlpapi wldap32 advapi32 normaliz
+    Threads::Threads
+  )
+else()
+  target_link_libraries(CURL::libcurl INTERFACE
+    ${_bc_lib}/libnghttp2.a
+    ${_bc_lib}/libssl.a
+    ${_bc_lib}/libcrypto.a
+    ${_bc_zlib_a}
+    Threads::Threads
+    ${CMAKE_DL_LIBS}
+  )
+endif()
 
 # macOS: bundled curl's macos.c reads the system proxy config via
 # SystemConfiguration (SCDynamicStoreCopyProxies) and CoreFoundation (CFRelease).

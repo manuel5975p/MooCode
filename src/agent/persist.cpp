@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "agent/fsutil.hpp"
+#include "agent/platform.hpp"  // user_home
 #include "agent/strutil.hpp"
 
 // The project bans exceptions, so toml++ must use its error-returning API. This
@@ -61,7 +62,11 @@ Role role_from_string(std::string_view s) {
 // Format `t` as ISO-8601 UTC "yyyy-mm-ddThh:mm:ssZ". Empty on clock failure.
 std::string iso_utc(std::time_t t) {
     std::tm tm{};
+#ifdef _WIN32
+    if (::gmtime_s(&tm, &t) != 0) return {};
+#else
     if (!::gmtime_r(&t, &tm)) return {};
+#endif
     char buf[32];
     std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
     return buf;
@@ -78,8 +83,8 @@ std::optional<std::string> toml_check_syntax(std::string_view text) {
 std::string moocode_home() {
     std::string fh = env_or("MOOCODE_HOME", "");
     if (!fh.empty()) return fh;
-    std::string home = env_or("HOME", "");
-    if (!home.empty()) return home + "/.moo";
+    std::string home = user_home();
+    if (!home.empty()) return home + "/.moo";  // forward slash works on Win32 too
     return {};  // no home => persistence disabled
 }
 
