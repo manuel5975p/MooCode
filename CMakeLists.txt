@@ -42,10 +42,16 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
              Debug Release RelWithDebInfo MinSizeRel LTO_MINSIZE)
 
 # --- Dependencies -----------------------------------------------------------
-# libcurl: by default build a feature-stripped, fully static one from source so
-# the binary carries no HTTP/3 / SSH / krb5 / brotli / … shared objects. Set
-# -DMOOCODE_BUNDLED_CURL=OFF to fall back to the system libcurl instead.
-option(MOOCODE_BUNDLED_CURL "Build a static, minimal libcurl from source" ON)
+# libcurl: prefer system libcurl if available (better CA cert handling);
+# otherwise fall back to building a feature-stripped, fully static one from
+# source. Set -DMOOCODE_BUNDLED_CURL=ON to force the bundled build.
+# Detect system curl first: if found, default OFF; else default ON.
+find_package(CURL QUIET)
+if(CURL_FOUND)
+  option(MOOCODE_BUNDLED_CURL "Build a static, minimal libcurl from source" OFF)
+else()
+  option(MOOCODE_BUNDLED_CURL "Build a static, minimal libcurl from source" ON)
+endif()
 # Treat warnings as errors for moocode's own targets. Default OFF: the toolchain
 # is unpinned, so a newer GCC/Clang warning must never brick a stock build. The
 # dev/CI preset opts in.

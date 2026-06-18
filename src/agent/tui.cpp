@@ -3555,8 +3555,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         auto frac = [](int lines, int ch, const ftxui::Box& view) -> float {
             const int vh = view.y_max - view.y_min + 1;
             const int range = ch - vh;        // scrollable rows
-            if (range <= 0) return 1.f;        // nothing (or not yet) to scroll
-            return static_cast<float>(lines) / static_cast<float>(range);
+            if (range <= 0) return 0.f;        // content fits — no scroll needed
+            float f = static_cast<float>(lines) / static_cast<float>(range);
+            // Cap the step so a single notch never jumps more than 10% of the
+            // viewport, avoiding the "one tap to bottom" jump on short buffers.
+            return std::min(f, 0.1f);
         };
         constexpr int kWheelLines = 3;  // one wheel notch, the terminal standard
 

@@ -652,14 +652,16 @@ int main(int argc, char** argv) {
     reg.add(web_search_tool(search_config_from_env(home)));
     reg.add(web_fetch_tool());
 
-    // Gitea inspection tools (repos, PRs, commits, diffs, files). Every tool
-    // takes an optional per-call `url`, so they are always registered;
+    // Gitea inspection tools (repos, PRs, commits, diffs, files). Registered
+    // only when a Gitea instance is configured, so the model is never told
+    // about (nor given schemas for) tools it has no endpoint to call.
     // MOOCODE_GITEA_URL supplies the default instance and MOOCODE_GITEA_TOKEN
     // its credential. MOOCODE_GITEA_AUTH names a .env-style file
     // (GITEA_USER=... / GITEA_PASS=... / optional GITEA_URL=...) used as Basic
     // auth when no token is set; GITEA_URL there is the default instance unless
     // MOOCODE_GITEA_URL overrides it. Both credentials are sent only to the
-    // configured instance's origin.
+    // configured instance's origin. Every tool also takes an optional per-call
+    // `url`, but that only matters once an instance is configured.
     {
         GiteaConfig gcfg;
         gcfg.base_url = env_or("MOOCODE_GITEA_URL", "");
@@ -678,7 +680,8 @@ int main(int argc, char** argv) {
             // still wins.
             if (gcfg.base_url.empty()) gcfg.base_url = auth.url;
         }
-        for (Tool& t : gitea_tools(std::move(gcfg))) reg.add(std::move(t));
+        if (!gcfg.base_url.empty())
+            for (Tool& t : gitea_tools(std::move(gcfg))) reg.add(std::move(t));
     }
 
     // Read-only local-git tools (status/diff/log/show/branch). Always registered;
