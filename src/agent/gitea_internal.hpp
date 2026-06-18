@@ -34,15 +34,15 @@ std::string gitea_error_message(long status, std::string_view body);
 // identity. "" when `url` has no "://". Total.
 std::string gitea_origin(std::string_view url);
 
-// Credentials read from a $MOOCODE_GITEA_AUTH file. Fields are empty when the
-// corresponding key is absent.
+// Credentials (and optional instance URL) read from a $MOOCODE_GITEA_AUTH
+// file. Fields are empty when the corresponding key is absent.
 struct GiteaBasicAuth {
-    std::string user, pass;
+    std::string user, pass, url;
 };
 
-// Parse .env-style content for GITEA_USER / GITEA_PASS: KEY=VALUE lines, '#'
-// comments and blank lines ignored, whitespace and one layer of matching
-// quotes around the value stripped. Total.
+// Parse .env-style content for GITEA_USER / GITEA_PASS / GITEA_URL: KEY=VALUE
+// lines, '#' comments and blank lines ignored, whitespace and one layer of
+// matching quotes around the value stripped. Total.
 GiteaBasicAuth parse_gitea_auth(std::string_view content);
 
 // "Authorization: Basic <base64(user:pass)>" header line. Total.

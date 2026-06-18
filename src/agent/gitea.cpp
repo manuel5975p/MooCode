@@ -135,6 +135,7 @@ GiteaBasicAuth parse_gitea_auth(std::string_view content) {
                 const std::string_view val = unquote(trim_sv(line.substr(eq + 1)));
                 if (key == "GITEA_USER") auth.user = std::string(val);
                 else if (key == "GITEA_PASS") auth.pass = std::string(val);
+                else if (key == "GITEA_URL") auth.url = std::string(val);
             }
         }
         if (nl == std::string_view::npos) break;

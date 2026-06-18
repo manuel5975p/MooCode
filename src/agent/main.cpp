@@ -653,8 +653,10 @@ int main(int argc, char** argv) {
     // takes an optional per-call `url`, so they are always registered;
     // MOOCODE_GITEA_URL supplies the default instance and MOOCODE_GITEA_TOKEN
     // its credential. MOOCODE_GITEA_AUTH names a .env-style file
-    // (GITEA_USER=... / GITEA_PASS=...) used as Basic auth when no token is
-    // set. Both credentials are sent only to the configured instance's origin.
+    // (GITEA_USER=... / GITEA_PASS=... / optional GITEA_URL=...) used as Basic
+    // auth when no token is set; GITEA_URL there is the default instance unless
+    // MOOCODE_GITEA_URL overrides it. Both credentials are sent only to the
+    // configured instance's origin.
     {
         GiteaConfig gcfg;
         gcfg.base_url = env_or("MOOCODE_GITEA_URL", "");
@@ -669,6 +671,9 @@ int main(int argc, char** argv) {
                              auth_file.c_str());
             gcfg.auth_user = auth.user;
             gcfg.auth_pass = auth.pass;
+            // The same .env may carry GITEA_URL; an explicit MOOCODE_GITEA_URL
+            // still wins.
+            if (gcfg.base_url.empty()) gcfg.base_url = auth.url;
         }
         for (Tool& t : gitea_tools(std::move(gcfg))) reg.add(std::move(t));
     }

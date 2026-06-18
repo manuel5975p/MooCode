@@ -485,6 +485,13 @@ TEST("parse_gitea_auth: .env keys, quotes, comments, CRLF") {
     a = parse_gitea_auth("no key value pairs here");
     CHECK_EQ(a.user, "");
     CHECK_EQ(a.pass, "");
+    CHECK_EQ(a.url, "");
+
+    a = parse_gitea_auth("GITEA_URL=https://git.skysec.dev\n"
+                         "GITEA_USER=manuel\nGITEA_PASS=s3cret\n");
+    CHECK_EQ(a.url, "https://git.skysec.dev");
+    CHECK_EQ(a.user, "manuel");
+    CHECK_EQ(a.pass, "s3cret");
 }
 
 TEST("gitea_basic_auth_header: RFC 2617 known vector") {
