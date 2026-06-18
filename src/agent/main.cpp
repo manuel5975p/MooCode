@@ -245,6 +245,9 @@ po::parser make_parser() {
     p["no-tools"].description(
         "Chat-only: omit the JSON tool schema from every request and the tool "
         "list from the system prompt, so the model cannot call tools");
+    p["no-env"].description(
+        "Do not load MOO.md environment inputs (global ~/.moo/MOO.md and "
+        "project-local MOO.md) into the system prompt");
     p["max-iters"].abbreviation('n').type(po::i32).fallback(0).description(
         "Max agent iterations (0 = unlimited, the default)");
     p["base-url"].abbreviation('b').type(po::string).description(
@@ -872,9 +875,11 @@ int main(int argc, char** argv) {
     // This runs after spawn_subagent registration so {TOOLS} includes it.
     expand_system_prompt(system, opts.root, reg, advertise_tools);
 
-    // Append project-local or global MOO.md when present.
-    if (std::string fm = load_moocode_md(home, opts.root); !fm.empty())
-        system += "\n\n" + std::move(fm);
+    // Append project-local or global MOO.md when present (--no-env skips it).
+    if (!cli["no-env"].was_set()) {
+        if (std::string fm = load_moocode_md(home, opts.root); !fm.empty())
+            system += "\n\n" + std::move(fm);
+    }
 
     // Push the final prompt into the already-constructed agent.
     agent.set_system_prompt(system);

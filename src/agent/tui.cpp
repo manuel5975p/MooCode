@@ -2946,13 +2946,48 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // stack is discarded by the terminal on exit, so no in-loop pop is needed.
     bool kitty_pushed = false;
 
-    // Per-pane content + viewport extents, captured each frame via reflect.
-    // Wheel/PgUp scrolling converts a fixed LINE count into the fraction these
-    // panes scroll by, so one tick moves the same distance whether the buffer
-    // is ten lines or ten thousand — fraction-only scrolling flew across (and
-    // on burst-prone terminals "escalated" through) long chats.
-    ftxui::Box chat_content, chat_view, act_content, act_view, detail_content,
-        detail_view, dmax_content, dmax_view;
+    // Per-pane viewport extents, captured each frame via reflect, plus the
+    // content's natural height measured via ComputeRequirement(). reflecting the
+    // *content* box is useless: inside a frame the content node is handed the
+    // viewport-sized box, so reflect always reports the viewport height — never
+    // the true line count. The natural height (requirement().min_y) is what the
+    // scroll maths needs, so each render stamps it into *_ch below.
+    ftxui::Box chat_view, act_view, detail_view, dmax_view;
+    int chat_ch = 0, act_ch = 0, detail_ch = 0, dmax_ch = 0;
+
+    // The *_scroll values are a top-anchored fraction of the scroll range
+    // (0 = top, 1 = bottom) — that is what the wheel/PgUp handlers step by
+    // (frac() = lines / range). focusPositionRelative, however, takes a point
+    // expressed as a fraction of the *content* height, which `frame` then
+    // centres in the viewport and clamps: dy = clamp(ch*f - (vh-1)/2, 0, ch-vh).
+    // Feeding the raw fraction in left a half-viewport dead zone at each end and
+    // scrolled ch/(ch-vh)× too fast in between. Invert that mapping here so p
+    // lands exactly on dy = p*(ch-vh): f = (p*(ch-vh) + (vh-1)/2) / ch.
+    // ch is the measured natural height; vh comes from the reflected viewport.
+    auto focus_frac = [](float p, int ch, const ftxui::Box& view) -> float {
+        const int vh = view.y_max - view.y_min + 1;
+        const int range = ch - vh;
+        if (range <= 0) return 0.f;
+        const float dy = std::clamp(p, 0.f, 1.f) * static_cast<float>(range);
+        return (dy + static_cast<float>(vh - 1) * 0.5f) / static_cast<float>(ch);
+    };
+
+    // True wrapped height of a pane's content, in rows. A freshly built element
+    // under-reports requirement().min_y for wrapped text (paragraph / markdown):
+    // wrapping is only resolved once a width is assigned, so min_y counts each
+    // paragraph as one row until then. Lay the element out once at the real pane
+    // width — the flexbox caches that width — and re-read min_y to get the
+    // wrapped count. The subsequent real render reuses the cached width, so
+    // focusPositionRelative positions by this same height and focus_frac stays
+    // exact. width<=0 (pane not yet measured) falls back to the bare min_y.
+    auto measure_h = [](const ftxui::Element& el, int width) -> int {
+        el->ComputeRequirement();
+        if (width > 0) {
+            el->SetBox(ftxui::Box{0, width - 1, 0, 1 << 20});
+            el->ComputeRequirement();
+        }
+        return el->requirement().min_y;
+    };
 
     auto root = Renderer(input, [&] {
         // Enable the kitty keyboard protocol now that the alt screen is live
@@ -3035,19 +3070,23 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 
         Element chat = render_chat(state, frame_now, hits,
                                    zone == Zone::Chat && follow_chat);
-        chat = chat | reflect(chat_content);
+        chat_ch = measure_h(chat, chat_view.x_max - chat_view.x_min);
         chat = ((zone == Zone::Chat && follow_chat)
                     ? chat | yframe | vscroll_indicator | flex
-                    : chat | focusPositionRelative(0.f, chat_scroll) | yframe |
-                          vscroll_indicator | flex) |
+                    : chat |
+                          focusPositionRelative(
+                              0.f, focus_frac(chat_scroll, chat_ch, chat_view)) |
+                          yframe | vscroll_indicator | flex) |
                reflect(chat_view);
         Element tree = render_activity_tree(state, frame_now, hits,
                                             zone == Zone::Activity && follow_act);
-        tree = tree | reflect(act_content);
+        act_ch = measure_h(tree, act_view.x_max - act_view.x_min);
         tree = ((zone == Zone::Activity && follow_act)
                     ? tree | yframe | vscroll_indicator | flex
-                    : tree | focusPositionRelative(0.f, activity_scroll) | yframe |
-                          vscroll_indicator | flex) |
+                    : tree |
+                          focusPositionRelative(
+                              0.f, focus_frac(activity_scroll, act_ch, act_view)) |
+                          yframe | vscroll_indicator | flex) |
                reflect(act_view);
         // The lower pane is content-driven: the foldable subagents browser when
         // its zone is focused / a sub-agent (or nothing) is selected, else the
@@ -3063,8 +3102,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         Element detail =
             (show_browser
                  ? render_subagent_browser(state, frame_now, hits, browser_focus)
-                 : render_detail(state, frame_now)) |
-            reflect(detail_content) | focusPositionRelative(0.f, detail_scroll) |
+                 : render_detail(state, frame_now));
+        detail_ch = measure_h(detail, detail_view.x_max - detail_view.x_min);
+        detail = detail |
+            focusPositionRelative(
+                0.f, focus_frac(detail_scroll, detail_ch, detail_view)) |
             yframe | vscroll_indicator | flex | reflect(detail_view);
 
         Element complete_box = nullptr;
@@ -3396,11 +3438,14 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         }
         if (detail_max) {
             const int tw = Terminal::Size().dimx, th = Terminal::Size().dimy;
+            Element dmax_body = render_detail(state, frame_now);
+            dmax_ch = measure_h(dmax_body, dmax_view.x_max - dmax_view.x_min);
             Element dlg =
                 window(text(" inspect ") | bold,
-                       vbox({render_detail(state, frame_now) |
-                                 reflect(dmax_content) |
-                                 focusPositionRelative(0.f, detail_max_scroll) |
+                       vbox({dmax_body |
+                                 focusPositionRelative(
+                                     0.f, focus_frac(detail_max_scroll, dmax_ch,
+                                                     dmax_view)) |
                                  yframe | vscroll_indicator | flex |
                                  reflect(dmax_view),
                              separator(),
@@ -3505,9 +3550,9 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         // focusPositionRelative panes use, so a wheel notch / key always moves
         // the same visual distance regardless of buffer length. Falls back to a
         // small fraction before the pane has been measured (boxes still empty).
-        auto frac = [](int lines, const ftxui::Box& content,
-                       const ftxui::Box& view) -> float {
-            const int ch = content.y_max - content.y_min + 1;
+        // ch is the content's natural line count (measured at render via
+        // ComputeRequirement); vh is the reflected viewport height.
+        auto frac = [](int lines, int ch, const ftxui::Box& view) -> float {
             const int vh = view.y_max - view.y_min + 1;
             const int range = ch - vh;        // scrollable rows
             if (range <= 0) return 1.f;        // nothing (or not yet) to scroll
@@ -3989,14 +4034,14 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             };
             const int page = std::max(1, (dmax_view.y_max - dmax_view.y_min) - 1);
             if (e == Event::Escape) { detail_max = false; return true; }
-            if (e == Event::ArrowUp) { scroll_max(-frac(1, dmax_content, dmax_view)); return true; }
-            if (e == Event::ArrowDown) { scroll_max(+frac(1, dmax_content, dmax_view)); return true; }
-            if (e == Event::PageUp) { scroll_max(-frac(page, dmax_content, dmax_view)); return true; }
-            if (e == Event::PageDown) { scroll_max(+frac(page, dmax_content, dmax_view)); return true; }
+            if (e == Event::ArrowUp) { scroll_max(-frac(1, dmax_ch, dmax_view)); return true; }
+            if (e == Event::ArrowDown) { scroll_max(+frac(1, dmax_ch, dmax_view)); return true; }
+            if (e == Event::PageUp) { scroll_max(-frac(page, dmax_ch, dmax_view)); return true; }
+            if (e == Event::PageDown) { scroll_max(+frac(page, dmax_ch, dmax_view)); return true; }
             if (e.is_mouse() && e.mouse().button == Mouse::WheelUp)
-                { scroll_max(-frac(kWheelLines, dmax_content, dmax_view)); return true; }
+                { scroll_max(-frac(kWheelLines, dmax_ch, dmax_view)); return true; }
             if (e.is_mouse() && e.mouse().button == Mouse::WheelDown)
-                { scroll_max(+frac(kWheelLines, dmax_content, dmax_view)); return true; }
+                { scroll_max(+frac(kWheelLines, dmax_ch, dmax_view)); return true; }
             return true;  // modal: swallow everything else
         }
 
@@ -4067,13 +4112,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             if (e == Event::PageUp) {
                 const int page = std::max(1, (detail_view.y_max - detail_view.y_min) - 1);
                 detail_scroll = std::clamp(
-                    detail_scroll - frac(page, detail_content, detail_view), 0.f, 1.f);
+                    detail_scroll - frac(page, detail_ch, detail_view), 0.f, 1.f);
                 return true;
             }
             if (e == Event::PageDown) {
                 const int page = std::max(1, (detail_view.y_max - detail_view.y_min) - 1);
                 detail_scroll = std::clamp(
-                    detail_scroll + frac(page, detail_content, detail_view), 0.f, 1.f);
+                    detail_scroll + frac(page, detail_ch, detail_view), 0.f, 1.f);
                 return true;
             }
             if (e == Event::Escape) {
@@ -4179,19 +4224,19 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             switch (wheel_target(e.mouse().x, e.mouse().y, tw, th, aw, dh)) {
                 case Pane::Chat:
                     chat_scroll = std::clamp(
-                        chat_scroll + dir * frac(kWheelLines, chat_content, chat_view),
+                        chat_scroll + dir * frac(kWheelLines, chat_ch, chat_view),
                         0.f, 1.f);
                     follow_chat = false;
                     break;
                 case Pane::Activity:
                     activity_scroll = std::clamp(
-                        activity_scroll + dir * frac(kWheelLines, act_content, act_view),
+                        activity_scroll + dir * frac(kWheelLines, act_ch, act_view),
                         0.f, 1.f);
                     follow_act = false;
                     break;
                 case Pane::Detail:
                     detail_scroll = std::clamp(
-                        detail_scroll + dir * frac(kWheelLines, detail_content, detail_view),
+                        detail_scroll + dir * frac(kWheelLines, detail_ch, detail_view),
                         0.f, 1.f);
                     break;
                 case Pane::None:
@@ -4202,14 +4247,14 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         if (e == Event::PageUp) {
             const int page = std::max(1, (chat_view.y_max - chat_view.y_min) - 1);
             chat_scroll =
-                std::clamp(chat_scroll - frac(page, chat_content, chat_view), 0.f, 1.f);
+                std::clamp(chat_scroll - frac(page, chat_ch, chat_view), 0.f, 1.f);
             follow_chat = false;
             return true;
         }
         if (e == Event::PageDown) {
             const int page = std::max(1, (chat_view.y_max - chat_view.y_min) - 1);
             chat_scroll =
-                std::clamp(chat_scroll + frac(page, chat_content, chat_view), 0.f, 1.f);
+                std::clamp(chat_scroll + frac(page, chat_ch, chat_view), 0.f, 1.f);
             follow_chat = false;
             return true;
         }
