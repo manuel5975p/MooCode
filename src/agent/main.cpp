@@ -346,11 +346,22 @@ void migrate_legacy(const std::string& home) {
 
 // Web-search config from the environment: SEARXNG_URL (primary, default
 // localhost:8080), TAVILY_API_KEY (optional fallback), TAVILY_MONTHLY_LIMIT
-// (fallback budget, default 1000 to fit Tavily's free tier).
+// (fallback budget, default 1000 to fit Tavily's free tier), ZAI_API_KEY
+// (optional z.ai/GLM premium fallback; falls back to the "zai" key in
+// credentials.toml when the env var is unset).
 SearchConfig search_config_from_env(const std::string& home) {
     SearchConfig cfg;
     cfg.searxng_url = env_or("SEARXNG_URL", "http://localhost:8080");
     cfg.tavily_api_key = env_or("TAVILY_API_KEY", "");
+    cfg.zai_api_key = env_or("ZAI_API_KEY", "");
+    // No env key: look up the "zai" profile credential, mirroring how the LLM
+    // api_key falls back to credentials.toml. Lets a user store the z.ai key
+    // once in credentials.toml instead of exporting an env var.
+    if (cfg.zai_api_key.empty()) {
+        auto creds = load_credentials(home);
+        if (auto it = creds.find("zai"); it != creds.end())
+            cfg.zai_api_key = it->second;
+    }
     cfg.quota_file = search_quota_path(home);
     if (const char* lim = std::getenv("TAVILY_MONTHLY_LIMIT")) {
         const int n = std::atoi(lim);

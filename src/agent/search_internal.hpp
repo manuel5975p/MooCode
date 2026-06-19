@@ -48,6 +48,13 @@ parse_searxng_results(const nlohmann::json& body);
 std::expected<std::vector<SearchResult>, Error>
 parse_tavily_results(const nlohmann::json& body);
 
+// Parse a z.ai (GLM) /paas/v4/web_search response body. Unlike SearXNG/Tavily
+// the results live under "search_result" (singular) and each hit uses "link"
+// for the URL and "content" for the snippet. pre: none. post: the
+// "search_result" array mapped to SearchResult; Error if absent/not an array.
+std::expected<std::vector<SearchResult>, Error>
+parse_zai_results(const nlohmann::json& body);
+
 // Parse DuckDuckGo HTML search results (from html.duckduckgo.com/html/).
 // Extracts title, url, and snippet from each result block; strips HTML tags.
 // pre: none. max_results > 0. post: up to max_results SearchResult entries.
@@ -60,6 +67,10 @@ std::string searxng_search_url(std::string_view base, std::string_view query,
 
 // Build the Tavily `/search` POST body (basic depth, to conserve credits).
 std::string tavily_request_body(std::string_view query, int max_results);
+
+// Build the z.ai /paas/v4/web_search POST body. `search-prime` is the only
+// engine; `count` is clamped to the API's 1..50 range by the caller. pre: none.
+std::string zai_request_body(std::string_view query, int max_results);
 
 // Render results as model-facing tool output (numbered title / url / snippet),
 // or a clear "no results" line when empty. Total.
@@ -90,6 +101,25 @@ public:
     std::expected<std::vector<SearchResult>, Error>
     search(std::string_view query, int max_results) override;
     std::string_view name() const override { return "tavily"; }
+
+private:
+    std::string api_key_;
+    std::string base_url_;
+    long timeout_secs_;
+};
+
+// z.ai (GLM) Web Search backend. A credential-gated paid search engine
+// (POST /paas/v4/web_search, Bearer auth, `search-prime` engine) returning
+// LLM-oriented results. Used as a premium fallback tier when SearXNG yields
+// nothing; gated by a z.ai API key (env ZAI_API_KEY or credentials.toml "zai").
+class ZaiBackend : public SearchBackend {
+public:
+    explicit ZaiBackend(std::string api_key,
+                        std::string base_url = "https://api.z.ai/api",
+                        long timeout_secs = 15);
+    std::expected<std::vector<SearchResult>, Error>
+    search(std::string_view query, int max_results) override;
+    std::string_view name() const override { return "zai"; }
 
 private:
     std::string api_key_;
@@ -146,18 +176,25 @@ private:
 
 // --- router -----------------------------------------------------------------
 
-// SearXNG first; on Error or empty results fall back to Tavily, but only when a
-// fallback is configured and the quota permits. Holds non-owning references.
+// One fallback tier: a backend plus an optional monthly quota gating it. A tier
+// with quota == nullptr is always eligible (e.g. a keyless backend); a tier
+// with a quota is skipped when the budget for the current month is exhausted.
+struct FallbackTier {
+    SearchBackend* backend = nullptr;  // required
+    MonthlyQuota* quota = nullptr;     // optional (nullptr = uncapped)
+};
+
+// SearXNG first; on Error or empty results fall back through the configured
+// tiers in order, each gated by its own optional quota, ending at the keyless
+// last-resort tier (DDG). Holds non-owning references.
 struct Router {
-    SearchBackend* primary = nullptr;     // required
-    SearchBackend* fallback = nullptr;    // optional (nullptr disables fallback)
-    SearchBackend* last_resort = nullptr; // optional keyless final fallback (DDG)
-    MonthlyQuota* quota = nullptr;        // optional (nullptr = uncapped)
+    SearchBackend* primary = nullptr;  // required
+    std::vector<FallbackTier> fallbacks;  // ordered; may be empty
     std::function<std::string()> month_fn = current_month;
     int max_results = 5;
 
     // pre: primary set. post: results from whichever backend served first;
-    // tries primary, then quota-gated fallback, then last_resort; if every
+    // tries primary, then each quota-gated fallback tier in order; if every
     // attempt yielded nothing, the most relevant Error or empty primary result.
     std::expected<std::vector<SearchResult>, Error>
     search(std::string_view query) const;

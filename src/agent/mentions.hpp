@@ -94,7 +94,14 @@ MentionContext mention_context_at(std::string_view line, std::size_t cursor);
 // case-insensitively as a prefix against that directory's entries. Dirs sort
 // before files, each lexicographically; dotfiles are hidden unless the segment
 // itself starts with '.'. Returns at most `max` candidates.
-// post: never throws; empty vector on any resolve/IO error or sandbox escape.
+//
+// Fuzzy fallback: when the prefix phase yields fewer than a small threshold of
+// candidates AND the typed token has no '/' (i.e. the user is still at the
+// root), the whole tree under `root` is walked and files whose basename
+// contains the typed segment as a subsequence (case-insensitive) are appended.
+// So typing "test" surfaces "src/test.cpp" even though it is not in the root.
+// Build/cache/VCS directories are pruned from the walk. post: never throws;
+// empty vector on any resolve/IO error or sandbox escape.
 std::vector<MentionCompletion>
 complete_mention(std::string_view typed, const std::filesystem::path& root,
                  std::size_t max = 50);

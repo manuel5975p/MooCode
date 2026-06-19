@@ -490,3 +490,90 @@ TEST("complete: max caps the candidate count") {
     auto v = complete_mention("", d.path(), 2);
     CHECK_EQ(v.size(), std::size_t{2});
 }
+
+// --- fuzzy / recursive subsequence fallback ---------------------------------
+
+TEST("complete: subsequence fallback surfaces a file in a subdir") {
+    test::TempDir d;
+    d.write("src/test.cpp", "x");
+    // Root has no entry starting with "test", so the prefix phase is empty
+    // and the recursive subsequence fallback must find src/test.cpp.
+    auto v = complete_mention("test", d.path());
+    CHECK_EQ(v.size(), std::size_t{1});
+    CHECK_EQ(v[0].insert, std::string("src/test.cpp"));
+    CHECK(!v[0].is_dir);
+}
+
+TEST("complete: subsequence matches non-contiguous chars (tst -> test.cpp)") {
+    test::TempDir d;
+    d.write("src/test.cpp", "x");
+    auto v = complete_mention("tst", d.path());
+    CHECK_EQ(v.size(), std::size_t{1});
+    CHECK_EQ(v[0].insert, std::string("src/test.cpp"));
+}
+
+TEST("complete: subsequence is case-insensitive") {
+    test::TempDir d;
+    d.write("src/TestCase.cpp", "x");
+    auto v = complete_mention("test", d.path());
+    CHECK_EQ(v.size(), std::size_t{1});
+    CHECK_EQ(v[0].insert, std::string("src/TestCase.cpp"));
+}
+
+TEST("complete: prefix matches sort before fuzzy hits") {
+    test::TempDir d;
+    // "testing.txt" is a prefix hit in the root; "src/test.cpp" is a fuzzy hit.
+    d.write("testing.txt", "x");
+    d.write("src/test.cpp", "x");
+    auto v = complete_mention("test", d.path());
+    CHECK_EQ(v.size(), std::size_t{2});
+    CHECK_EQ(v[0].insert, std::string("testing.txt"));
+    CHECK_EQ(v[1].insert, std::string("src/test.cpp"));
+}
+
+TEST("complete: fuzzy fallback does not run once a subdir is drilled into") {
+    test::TempDir d;
+    d.write("src/test.cpp", "x");
+    d.write("src/other.cpp", "x");
+    // "src/test" points into src/; prefix match there finds test.cpp. The
+    // fallback is suppressed (dir_rel non-empty), so other.cpp is NOT added.
+    auto v = complete_mention("src/test", d.path());
+    CHECK_EQ(v.size(), std::size_t{1});
+    CHECK_EQ(v[0].insert, std::string("src/test.cpp"));
+}
+
+TEST("complete: fuzzy fallback skips build/cache/VCS directories") {
+    test::TempDir d;
+    // A file that would match "test" but lives under a pruned build tree.
+    d.write("build/test.cpp", "x");
+    d.write(".git/test.cpp", "x");
+    d.write("src/test.cpp", "x");
+    auto v = complete_mention("test", d.path());
+    // Only the src/ hit survives; build/ and .git/ are pruned.
+    CHECK_EQ(v.size(), std::size_t{1});
+    CHECK_EQ(v[0].insert, std::string("src/test.cpp"));
+}
+
+TEST("complete: fuzzy fallback is deduped against prefix hits") {
+    test::TempDir d;
+    // "test.cpp" is both a root prefix hit and a fuzzy hit; must appear once.
+    d.write("test.cpp", "x");
+    d.write("src/test.cpp", "x");
+    auto v = complete_mention("test", d.path());
+    std::vector<std::string> inserts;
+    for (const auto& c : v) inserts.push_back(c.insert);
+    std::ranges::sort(inserts);
+    CHECK_EQ(inserts.size(), std::size_t{2});
+    CHECK_EQ(inserts[0], std::string("src/test.cpp"));
+    CHECK_EQ(inserts[1], std::string("test.cpp"));
+}
+
+TEST("complete: empty segment lists root only (no recursive walk)") {
+    test::TempDir d;
+    d.write("src/test.cpp", "x");
+    // Bare "@" with nothing typed: prefix phase lists root entries; the
+    // fallback is skipped (seg empty), so src/test.cpp is not surfaced.
+    auto v = complete_mention("", d.path());
+    CHECK_EQ(v.size(), std::size_t{1});
+    CHECK_EQ(v[0].insert, std::string("src/"));
+}

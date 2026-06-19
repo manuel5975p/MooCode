@@ -22,6 +22,7 @@ namespace moocode {
 struct SearchConfig {
     std::string searxng_url = "http://localhost:8080";
     std::string tavily_api_key;  // empty => SearXNG-only (no fallback)
+    std::string zai_api_key;     // empty => no z.ai (GLM) premium fallback
     std::filesystem::path quota_file;
     int tavily_monthly_limit = 1000;
     int max_results = 5;

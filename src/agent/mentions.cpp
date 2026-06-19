@@ -46,6 +46,34 @@ bool glob_match(std::string_view pat, std::string_view text) {
     return pi == pat.size();
 }
 
+// True when `needle` (already lowercased) is a subsequence of `haystack`
+// (already lowercased): every char of needle appears in haystack in order,
+// not necessarily contiguously. Empty needle matches anything. Total.
+bool subsequence_match(std::string_view needle, std::string_view haystack) {
+    std::size_t j = 0;
+    for (char c : haystack) {
+        if (j < needle.size() && c == needle[j]) ++j;
+    }
+    return j == needle.size();
+}
+
+// Directories the recursive completion fallback never descends into. Covers
+// VCS/cache dotdirs (anything beginning with '.') plus common build and
+// dependency-output trees, so the walk stays bounded by real source.
+bool is_pruned_dir(std::string_view name) {
+    if (name.empty()) return false;
+    if (name[0] == '.') return true;
+    if (name == "build" || name.starts_with("build-")) return true;
+    return name == "node_modules" || name == "out" || name == "dist" ||
+           name == "target" || name == "Testing" || name == "CMakeFiles" ||
+           name == "_deps" || name == "__pycache__" || name == "venv" ||
+           name == "coverage";
+}
+
+// When the direct prefix match yields fewer than this many candidates, the
+// recursive subsequence fallback kicks in to surface files in subdirectories.
+constexpr std::size_t kRecurseThreshold = 8;
+
 // True when `c` (a single character) is one of the punctuation characters
 // that always end a path token. Used both as the main switch's case list
 // and as a lookahead helper for the period rule below.
@@ -714,6 +742,9 @@ complete_mention(std::string_view typed, const fs::path& root, std::size_t max) 
     const std::string seg_l = lower(seg);
     const bool want_hidden = !seg.empty() && seg[0] == '.';
 
+    // --- Phase 1: fast prefix match in the single resolved directory. -------
+    // This is the original behaviour: list the directory the typed prefix
+    // points at, keep entries whose name starts with the trailing segment.
     std::error_code iter_ec;
     for (const auto& e : fs::directory_iterator(*resolved, iter_ec)) {
         std::string name = e.path().filename().string();
@@ -727,10 +758,66 @@ complete_mention(std::string_view typed, const fs::path& root, std::size_t max) 
         out.push_back({insert, insert, is_dir});
     }
     if (iter_ec) return {};
+    // Prefix hits keep their original dirs-first / lexicographic ordering and
+    // always rank above any fuzzy hit, so the user's literal prefix wins.
     std::ranges::sort(out, [](const MentionCompletion& a, const MentionCompletion& b) {
         if (a.is_dir != b.is_dir) return a.is_dir;
         return a.insert < b.insert;
     });
+
+    // --- Phase 2: recursive subsequence fallback over basenames. -----------
+    // When the prefix match is thin (e.g. the user typed "test" at the root
+    // but the file lives at "src/test.cpp"), walk the whole tree under `root`
+    // and keep files whose basename contains the typed segment as a
+    // subsequence. Only runs when the prefix phase found fewer than the
+    // threshold candidates AND the user has not already drilled into a
+    // subdirectory (dir_rel empty): once a path is chosen we stay literal.
+    // A leading-dot segment ("." or ".git…") is an explicit dotfile-listing
+    // gesture for the current directory, not a fuzzy name search, and a bare
+    // "." would subsequence-match every filename — so it is excluded.
+    if (out.size() < kRecurseThreshold && dir_rel.empty() && !seg.empty() &&
+        !want_hidden) {
+        std::vector<MentionCompletion> fuzzy;
+        std::error_code rec_ec;
+        for (auto it = fs::recursive_directory_iterator(root, rec_ec);
+             it != fs::recursive_directory_iterator(); ++it) {
+            if (fuzzy.size() >= max) break;
+            std::error_code dec;
+            if (it->is_directory(dec)) {
+                // Prune build/cache/VCS trees in-place so we don't descend.
+                std::string name = it->path().filename().string();
+                if (is_pruned_dir(name)) it.disable_recursion_pending();
+                continue;
+            }
+            if (!it->is_regular_file(dec)) continue;
+            std::string name = it->path().filename().string();
+            if (name.empty() || (name[0] == '.' && !want_hidden)) continue;
+            if (!subsequence_match(seg_l, lower(name))) continue;
+            // Relative path from root, forward-slash joined for display.
+            std::error_code rel_ec;
+            auto rel = fs::relative(it->path(), root, rel_ec);
+            if (rel_ec) continue;
+            std::string insert = rel.generic_string();
+            fuzzy.push_back({insert, insert, false});
+        }
+        if (!fuzzy.empty()) {
+            // Fuzzy hits are all files; sort lexicographically by path, then
+            // append those not already present from the prefix phase.
+            std::ranges::sort(fuzzy, [](const MentionCompletion& a,
+                                        const MentionCompletion& b) {
+                return a.insert < b.insert;
+            });
+            for (auto& f : fuzzy) {
+                if (out.size() >= max) break;
+                bool dup = false;
+                for (const auto& o : out) {
+                    if (o.insert == f.insert) { dup = true; break; }
+                }
+                if (!dup) out.push_back(std::move(f));
+            }
+        }
+    }
+
     if (out.size() > max) out.resize(max);
     return out;
 }

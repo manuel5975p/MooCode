@@ -96,6 +96,58 @@ TEST("parse_tavily: absent results array is an Error") {
     CHECK(!r.has_value());
 }
 
+// --- z.ai (GLM) parsing -----------------------------------------------------
+
+TEST("parse_zai: maps search_result array to title/url/snippet") {
+    auto body = nlohmann::json::parse(R"({"id":"x","created":1,"search_result":[
+        {"title":"GLM","link":"https://z.ai/glm","content":"zhipu model","media":"z.ai"},
+        {"title":"Docs","link":"https://docs.z.ai","content":"api docs"}]})");
+    auto r = parse_zai_results(body);
+    CHECK(r.has_value());
+    if (r) {
+        CHECK_EQ(r->size(), size_t{2});
+        CHECK_EQ((*r)[0].title, std::string("GLM"));
+        CHECK_EQ((*r)[0].url, std::string("https://z.ai/glm"));
+        CHECK_EQ((*r)[0].snippet, std::string("zhipu model"));
+        CHECK_EQ((*r)[1].url, std::string("https://docs.z.ai"));
+    }
+}
+
+TEST("parse_zai: absent search_result array is an Error") {
+    auto r = parse_zai_results(nlohmann::json::parse(R"({"id":"x","created":1})"));
+    CHECK(!r.has_value());
+}
+
+TEST("parse_zai: empty search_result array is an empty (ok) vector") {
+    auto r = parse_zai_results(nlohmann::json::parse(R"({"search_result":[]})"));
+    CHECK(r.has_value());
+    if (r) CHECK(r->empty());
+}
+
+TEST("parse_zai: missing fields tolerated as empty strings") {
+    auto body = nlohmann::json::parse(R"({"search_result":[{"link":"https://y"}]})");
+    auto r = parse_zai_results(body);
+    CHECK(r.has_value());
+    if (r) {
+        CHECK_EQ(r->size(), size_t{1});
+        CHECK_EQ((*r)[0].url, std::string("https://y"));
+        CHECK_EQ((*r)[0].title, std::string(""));
+    }
+}
+
+TEST("zai_request_body: is valid JSON with search-prime engine and clamped count") {
+    auto b = zai_request_body("hello world", 5);
+    auto j = nlohmann::json::parse(b);
+    CHECK_EQ(j.value("search_engine", std::string()), std::string("search-prime"));
+    CHECK_EQ(j.value("search_query", std::string()), std::string("hello world"));
+    CHECK_EQ(j.value("count", 0), 5);
+}
+
+TEST("zai_request_body: clamps count to the 1..50 API range") {
+    CHECK_EQ(nlohmann::json::parse(zai_request_body("q", 0)).value("count", 0), 1);
+    CHECK_EQ(nlohmann::json::parse(zai_request_body("q", 99)).value("count", 0), 50);
+}
+
 // --- URL / body builders ----------------------------------------------------
 
 TEST("searxng_search_url: encodes the query and asks for JSON") {
@@ -224,7 +276,7 @@ TEST("quota: persists across reconstruction within the same month") {
 TEST("router: primary success returns it without touching fallback") {
     FakeBackend primary("searxng", one("p", "https://p"));
     FakeBackend fallback("tavily", one("f", "https://f"));
-    Router r{&primary, &fallback, nullptr, nullptr, [] { return "2026-06"; }, 5};
+    Router r{&primary, {{&fallback, nullptr}}, [] { return "2026-06"; }, 5};
     auto out = r.search("q");
     CHECK(out.has_value());
     if (out) CHECK_EQ((*out)[0].url, std::string("https://p"));
@@ -234,7 +286,7 @@ TEST("router: primary success returns it without touching fallback") {
 TEST("router: primary error falls back to tavily") {
     FakeBackend primary("searxng", std::unexpected(Error{.msg = "down", .code = 0}));
     FakeBackend fallback("tavily", one("f", "https://f"));
-    Router r{&primary, &fallback, nullptr, nullptr, [] { return "2026-06"; }, 5};
+    Router r{&primary, {{&fallback, nullptr}}, [] { return "2026-06"; }, 5};
     auto out = r.search("q");
     CHECK(out.has_value());
     if (out) CHECK_EQ((*out)[0].url, std::string("https://f"));
@@ -244,7 +296,7 @@ TEST("router: primary error falls back to tavily") {
 TEST("router: primary empty falls back to tavily") {
     FakeBackend primary("searxng", std::vector<SearchResult>{});
     FakeBackend fallback("tavily", one("f", "https://f"));
-    Router r{&primary, &fallback, nullptr, nullptr, [] { return "2026-06"; }, 5};
+    Router r{&primary, {{&fallback, nullptr}}, [] { return "2026-06"; }, 5};
     auto out = r.search("q");
     CHECK(out.has_value());
     if (out) CHECK_EQ((*out)[0].url, std::string("https://f"));
@@ -253,7 +305,7 @@ TEST("router: primary empty falls back to tavily") {
 
 TEST("router: no fallback configured returns the primary outcome") {
     FakeBackend primary("searxng", std::unexpected(Error{.msg = "down", .code = 0}));
-    Router r{&primary, nullptr, nullptr, nullptr, [] { return "2026-06"; }, 5};
+    Router r{&primary, {}, [] { return "2026-06"; }, 5};
     auto out = r.search("q");
     CHECK(!out.has_value());
 }
@@ -264,7 +316,7 @@ TEST("router: exhausted quota skips the fallback") {
     CHECK(q.charge("2026-06"));  // budget now spent
     FakeBackend primary("searxng", std::unexpected(Error{.msg = "down", .code = 0}));
     FakeBackend fallback("tavily", one("f", "https://f"));
-    Router r{&primary, &fallback, nullptr, &q, [] { return "2026-06"; }, 5};
+    Router r{&primary, {{&fallback, &q}}, [] { return "2026-06"; }, 5};
     auto out = r.search("q");
     CHECK(!out.has_value());       // fell through to primary's error
     CHECK_EQ(fallback.calls, 0);   // never charged/called
@@ -276,10 +328,49 @@ TEST("router: using the fallback consumes one quota unit") {
     MonthlyQuota q(f, 10);
     FakeBackend primary("searxng", std::vector<SearchResult>{});
     FakeBackend fallback("tavily", one("f", "https://f"));
-    Router r{&primary, &fallback, nullptr, &q, [] { return "2026-06"; }, 5};
+    Router r{&primary, {{&fallback, &q}}, [] { return "2026-06"; }, 5};
     auto out = r.search("q");
     CHECK(out.has_value());
     CHECK_EQ(fallback.calls, 1);
     CHECK_EQ(q.used("2026-06"), 1);
     std::filesystem::remove(f);
+}
+
+// --- multi-tier chain (z.ai -> Tavily -> DDG) -------------------------------
+
+TEST("router: primary empty tries z.ai before Tavily") {
+    FakeBackend primary("searxng", std::vector<SearchResult>{});
+    FakeBackend zai("zai", one("z", "https://z"));
+    FakeBackend tavily("tavily", one("t", "https://t"));
+    Router r{&primary, {{&zai, nullptr}, {&tavily, nullptr}}, [] { return "2026-06"; }, 5};
+    auto out = r.search("q");
+    CHECK(out.has_value());
+    if (out) CHECK_EQ((*out)[0].url, std::string("https://z"));  // z.ai served first
+    CHECK_EQ(zai.calls, 1);
+    CHECK_EQ(tavily.calls, 0);  // never reached
+}
+
+TEST("router: z.ai empty falls through to Tavily") {
+    FakeBackend primary("searxng", std::vector<SearchResult>{});
+    FakeBackend zai("zai", std::vector<SearchResult>{});  // empty, not error
+    FakeBackend tavily("tavily", one("t", "https://t"));
+    Router r{&primary, {{&zai, nullptr}, {&tavily, nullptr}}, [] { return "2026-06"; }, 5};
+    auto out = r.search("q");
+    CHECK(out.has_value());
+    if (out) CHECK_EQ((*out)[0].url, std::string("https://t"));
+    CHECK_EQ(zai.calls, 1);
+    CHECK_EQ(tavily.calls, 1);
+}
+
+TEST("router: all tiers empty surfaces a composite error naming each") {
+    FakeBackend primary("searxng", std::unexpected(Error{.msg = "down", .code = 0}));
+    FakeBackend zai("zai", std::vector<SearchResult>{});
+    FakeBackend tavily("tavily", std::vector<SearchResult>{});
+    Router r{&primary, {{&zai, nullptr}, {&tavily, nullptr}}, [] { return "2026-06"; }, 5};
+    auto out = r.search("q");
+    CHECK(!out.has_value());
+    // Composite names every backend reached; primary's "down" is preserved.
+    CHECK(out.error().msg.find("searxng: down") != std::string::npos);
+    CHECK(out.error().msg.find("zai: no results") != std::string::npos);
+    CHECK(out.error().msg.find("tavily: no results") != std::string::npos);
 }

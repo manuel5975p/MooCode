@@ -34,7 +34,7 @@ agent_stream        pure SSE framing: StreamAccumulator, AnthropicStreamAccumula
   ↑
 agent_provider      Provider interface → OpenAI + Anthropic backends
 agent_tools         ToolRegistry: name → (spec, fn)
-agent_search        web_search tool: SearXNG → Tavily → DuckDuckGo
+agent_search        web_search tool: SearXNG → z.ai → Tavily → DuckDuckGo
 agent_gitea         read-only Gitea REST inspection tools
 agent_lsp           clangd-backed code intelligence (LSP JSON-RPC over stdio)
 agent_permissions   screen-free approval policy (allowlist + decide)
@@ -94,7 +94,7 @@ Every library is a separate CMake target so tests can link each in isolation.
 - `run_bash` — `/bin/sh -c` in process group with timeout
 
 ### Web
-- `web_search` — SearXNG → Tavily (quota-gated) → DuckDuckGo
+- `web_search` — SearXNG → z.ai (GLM, credential-gated) → Tavily (quota-gated) → DuckDuckGo
 - `web_fetch` — HTTP GET (256 KiB cap)
 
 ### Code Intelligence (clangd/LSP)
@@ -179,7 +179,7 @@ Result: HTTPS + HTTP/2 + gzip only. Tarballs cached in `.deps-cache/`, hash-veri
 ```
 ~/.moo/
 ├── settings.toml       base_url, model, provider, profiles, generation params
-├── credentials.toml    per-profile API keys (0600)
+├── credentials.toml    per-profile API keys + optional `zai` search key (0600)
 ├── permissions.toml    always-allowed tool list
 ├── history             input-line history
 ├── search_quota.json   Tavily monthly-quota counter

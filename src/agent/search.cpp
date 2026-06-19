@@ -49,6 +49,25 @@ parse_tavily_results(const nlohmann::json& body) {
     return parse_results_array(body, "tavily");
 }
 
+// z.ai puts results under "search_result" (singular) and uses "link"/"content"
+// instead of "url"/"content". Map to the same normalized SearchResult.
+std::expected<std::vector<SearchResult>, Error>
+parse_zai_results(const nlohmann::json& body) {
+    if (!body.is_object() || !body.contains("search_result") ||
+        !body["search_result"].is_array())
+        return std::unexpected(
+            Error{.msg = "zai: no search_result array", .code = 0});
+
+    std::vector<SearchResult> out;
+    for (const auto& e : body["search_result"]) {
+        if (!e.is_object()) continue;
+        out.push_back(SearchResult{.title = json::get_string_or(e, "title"),
+            .url = json::get_string_or(e, "link"),
+            .snippet = json::get_string_or(e, "content")});
+    }
+    return out;
+}
+
 // --- DuckDuckGo HTML result parsing -----------------------------------------
 
 namespace {
@@ -219,6 +238,15 @@ std::string tavily_request_body(std::string_view query, int max_results) {
     return j.dump();
 }
 
+std::string zai_request_body(std::string_view query, int max_results) {
+    // z.ai's `count` is 1..50; clamp defensively (the API rejects out-of-range).
+    int count = max_results < 1 ? 1 : (max_results > 50 ? 50 : max_results);
+    nlohmann::json j{{"search_engine", "search-prime"},
+                     {"search_query", std::string(query)},
+                     {"count", count}};
+    return j.dump();
+}
+
 std::string format_results(const std::vector<SearchResult>& results) {
     if (results.empty()) return "No results found.";
     std::string out;
@@ -293,6 +321,31 @@ TavilyBackend::search(std::string_view query, int max_results) {
     return parse_tavily_results(*j);
 }
 
+// --- ZaiBackend -------------------------------------------------------------
+
+ZaiBackend::ZaiBackend(std::string api_key, std::string base_url, long timeout_secs)
+    : api_key_(std::move(api_key)),
+      base_url_(std::move(base_url)),
+      timeout_secs_(timeout_secs) {}
+
+std::expected<std::vector<SearchResult>, Error>
+ZaiBackend::search(std::string_view query, int max_results) {
+    if (api_key_.empty()) return std::unexpected(Error{.msg = "zai: no API key", .code = 0});
+    auto resp = http::post_json(base_url_ + "/paas/v4/web_search",
+                                {"Authorization: Bearer " + api_key_,
+                                 "Accept-Language: en-US,en"},
+                                zai_request_body(query, max_results), timeout_secs_);
+    if (!resp) return std::unexpected(resp.error());
+    if (resp->status != 200)
+        return std::unexpected(
+            Error{.msg = "zai HTTP " + std::to_string(resp->status) + ": " + resp->body,
+                .code = static_cast<int>(resp->status)});
+
+    auto j = json::parse(resp->body);
+    if (!j) return std::unexpected(j.error());
+    return parse_zai_results(*j);
+}
+
 // --- DuckDuckGoBackend ------------------------------------------------------
 
 DuckDuckGoBackend::DuckDuckGoBackend(std::string base_url, long timeout_secs)
@@ -357,50 +410,32 @@ Router::search(std::string_view query) const {
     auto p = primary->search(query, max_results);
     if (p && !p->empty()) return p;  // SearXNG served — done
 
-    // SearXNG errored or came back empty: try Tavily if configured and budgeted.
-    if (fallback && (!quota || quota->has_budget(month_fn()))) {
-        auto f = fallback->search(query, max_results);
-        if (f && !f->empty()) {  // charge only a productive Tavily call
-            if (quota) quota->charge(month_fn());
+    // SearXNG errored or came back empty: walk the fallback tiers in order,
+    // each gated by its own optional quota. Charge only a productive call.
+    // Track every tier's outcome so an all-empty result surfaces a composite
+    // error naming each backend the query actually reached.
+    std::string composite;
+    auto note = [&](std::string_view name, const auto& r) {
+        if (!composite.empty()) composite += "; ";
+        composite += std::string(name);
+        composite += ": ";
+        composite += (r ? "no results" : r.error().msg);
+    };
+    note(primary->name(), p);
+
+    for (const auto& tier : fallbacks) {
+        if (!tier.backend) continue;
+        if (tier.quota && !tier.quota->has_budget(month_fn())) continue;  // spent
+        auto f = tier.backend->search(query, max_results);
+        if (f && !f->empty()) {
+            if (tier.quota) tier.quota->charge(month_fn());
             return f;
         }
-        // Tavily errored or empty: try DDG below, then surface best error.
-        if (last_resort) {
-            auto d = last_resort->search(query, max_results);
-            if (d && !d->empty()) return d;
-            // All three tiers exhausted — build a composite error.
-            std::string msg;
-            auto add = [&](std::string_view name, const auto& r) {
-                if (!msg.empty()) msg += "; ";
-                msg += std::string(name);
-                msg += ": ";
-                msg += (r ? "no results" : r.error().msg);
-            };
-            add(primary->name(), p);
-            add(fallback->name(), f);
-            add(last_resort->name(), d);
-            return std::unexpected(Error{.msg = msg, .code = 0});
-        }
-        if (!f) return f;  // no last-resort — surface Tavily's error
-        return p;
+        note(tier.backend->name(), f);
     }
-
-    // No Tavily (or quota exhausted): keyless DuckDuckGo last resort.
-    if (last_resort) {
-        auto d = last_resort->search(query, max_results);
-        if (d && !d->empty()) return d;
-        // Both tiers exhausted — composite error.
-        std::string msg;
-        msg += std::string(primary->name());
-        msg += ": ";
-        msg += (p ? "no results" : p.error().msg);
-        msg += "; ";
-        msg += std::string(last_resort->name());
-        msg += ": ";
-        msg += (d ? "no results" : d.error().msg);
-        return std::unexpected(Error{.msg = msg, .code = 0});
-    }
-    return p;
+    // Every tier yielded nothing: surface a composite error naming each backend
+    // the query reached, so the model sees which failed and how.
+    return std::unexpected(Error{.msg = composite, .code = 0});
 }
 
 // --- tool factory -----------------------------------------------------------
@@ -409,6 +444,11 @@ Tool web_search_tool(SearchConfig cfg) {
     auto searxng = std::make_shared<SearxngBackend>(cfg.searxng_url, cfg.timeout_secs);
     auto ddg = std::make_shared<DuckDuckGoBackend>("https://html.duckduckgo.com",
                                                    cfg.timeout_secs);
+    // Premium credential-gated tiers, built only when their key is present.
+    std::shared_ptr<ZaiBackend> zai;
+    if (!cfg.zai_api_key.empty())
+        zai = std::make_shared<ZaiBackend>(cfg.zai_api_key, "https://api.z.ai/api",
+                                           cfg.timeout_secs);
     std::shared_ptr<TavilyBackend> tavily;
     std::shared_ptr<MonthlyQuota> quota;
     if (!cfg.tavily_api_key.empty()) {
@@ -420,16 +460,17 @@ Tool web_search_tool(SearchConfig cfg) {
 
     ToolSpec spec{
         "web_search",
-        "Search web via self-hosted SearXNG, Tavily fallback when empty. Returns "
-        "numbered list of title / URL / snippet. Use for current or external info "
-        "not in working tree.",
+        "Search web via self-hosted SearXNG, with z.ai (GLM) and Tavily fallbacks "
+        "when empty, then a keyless DuckDuckGo last resort. Returns numbered list "
+        "of title / URL / snippet. Use for current or external info not in "
+        "working tree.",
         nlohmann::json{
             {"type", "object"},
             {"properties",
              {{"query", {{"type", "string"}, {"description", "web search query"}}}}},
             {"required", nlohmann::json::array({"query"})}}};
 
-    auto run = [searxng, tavily, ddg, quota, max_results](
+    auto run = [searxng, zai, tavily, ddg, quota, max_results](
                    const nlohmann::json& args) -> std::expected<std::string, Error> {
         auto q = json::get_string(args, "query");
         if (!q) return std::unexpected(q.error());
@@ -437,9 +478,11 @@ Tool web_search_tool(SearchConfig cfg) {
 
         Router router;
         router.primary = searxng.get();
-        router.fallback = tavily.get();  // nullptr when no Tavily key → SearXNG-only
-        router.last_resort = ddg.get();  // keyless final fallback
-        router.quota = quota.get();
+        // Order: premium credential-gated tiers first (z.ai, then Tavily under
+        // its monthly quota), then the keyless DuckDuckGo last resort.
+        if (zai) router.fallbacks.push_back({zai.get(), nullptr});
+        if (tavily) router.fallbacks.push_back({tavily.get(), quota.get()});
+        router.fallbacks.push_back({ddg.get(), nullptr});  // keyless final fallback
         router.max_results = max_results;
 
         auto res = router.search(*q);
