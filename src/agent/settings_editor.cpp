@@ -39,15 +39,16 @@ constexpr int kFieldProfile        = 11;
 // Profile detail fields (inline labels).
 struct ProfileField {
     std::string label;
-    enum { SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking } kind;
+    enum { SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking, SThinkingType } kind;
 };
 const ProfileField kProfileFields[] = {
-    {"name",     ProfileField::SName},
-    {"kind",     ProfileField::SKind},
-    {"base_url", ProfileField::SBaseUrl},
-    {"model",    ProfileField::SModel},
-    {"thinking",          ProfileField::SThinking},
-    {"drop_think",        ProfileField::SDropThinking},
+    {"name",          ProfileField::SName},
+    {"kind",          ProfileField::SKind},
+    {"base_url",      ProfileField::SBaseUrl},
+    {"model",         ProfileField::SModel},
+    {"thinking",      ProfileField::SThinking},
+    {"drop_think",    ProfileField::SDropThinking},
+    {"thinking_type", ProfileField::SThinkingType},
 };
 
 // Valid provider kind values.
@@ -174,6 +175,7 @@ void ProfileEditor::begin_edit_profile_field() {
         case ProfileField::SModel:    edit_buf = p.model; break;
         case ProfileField::SThinking:    edit_buf = (p.thinking < 0) ? "" : (p.thinking > 0 ? "on" : "off"); break;
         case ProfileField::SDropThinking: edit_buf = p.drop_thinking_tag ? "yes" : "no"; break;
+        case ProfileField::SThinkingType: edit_buf = p.thinking_type.empty() ? "enabled" : p.thinking_type; break;
         }
         edit_field_idx = profile_field_sel;
         profile_edit_text_mode = true;
@@ -200,6 +202,9 @@ void ProfileEditor::commit_profile_field_edit() {
         break;
     case ProfileField::SDropThinking:
         p.drop_thinking_tag = (edit_buf == "yes" || edit_buf == "true" || edit_buf == "on" || edit_buf == "1");
+        break;
+    case ProfileField::SThinkingType:
+        p.thinking_type = edit_buf;
         break;
     }
     profile_edit_text_mode = false;
@@ -235,6 +240,7 @@ std::string profile_field_value(const Profile& p, int field_idx) {
         if (p.thinking < 0) return "(unset)";
         return p.thinking > 0 ? "on" : "off";
     case kPFieldDropThinking: return p.drop_thinking_tag ? "yes" : "no";
+    case kPFieldThinkingType: return p.thinking_type.empty() ? "enabled" : p.thinking_type;
     default:              return {};
     }
 }

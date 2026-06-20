@@ -774,11 +774,19 @@ int main(int argc, char** argv) {
         gp.thinking = true;
     if (max_tokens > 0) gp.max_tokens = max_tokens;
 
+    // The active profile's thinking_type (e.g. "adaptive" for MiniMax, which
+    // rejects "enabled") threads into the OpenAI backend so reasoning-on emits
+    // the value the endpoint accepts. Empty/unset => the provider default
+    // ("enabled", the DeepSeek convention).
+    std::string conn_thinking_type;
+    if (profile && !profile->thinking_type.empty())
+        conn_thinking_type = profile->thinking_type;
+
     // Build the backend by wire format via the shared factory (single source of
     // truth with the TUI's runtime provider swaps). Both satisfy Provider&, so
     // the agent loop is identical; only the request/response shape differs.
     std::unique_ptr<Provider> provider = make_provider(
-        ProviderConnection{.kind = kind, .base_url = base_url, .api_key = api_key, .model = model, .max_tokens = max_tokens}, gp);
+        ProviderConnection{.kind = kind, .base_url = base_url, .api_key = api_key, .model = model, .max_tokens = max_tokens, .thinking_type = conn_thinking_type}, gp);
 
     // Soft warning: reasoning controls were requested on an OpenAI-compatible
     // model that probably ignores reasoning_effort/thinking. (Anthropic always
@@ -858,7 +866,8 @@ int main(int argc, char** argv) {
                                     .base_url = base,
                                     .api_key = api,
                                     .model = model,
-                                    .max_tokens = 0};
+                                    .max_tokens = 0,
+                                    .thinking_type = p->thinking_type};
             return make_provider(conn, GenerationParams{});
         };
         // The unrestricted tool is always advertised. The restricted variant is

@@ -28,6 +28,7 @@ struct OpenAiConfig {
     // Optional generation controls (opt-in; omitted from the request unless set).
     std::string reasoning_effort;        // "low"/"medium"/"high"; "" => omit
     std::optional<bool> thinking;        // nullopt => omit; else thinking:{type}
+    std::string thinking_type = "enabled";  // thinking.type when ON ("enabled" DeepSeek, "adaptive" MiniMax)
     int max_tokens = 0;                  // <= 0 => omit; else max_tokens
 
     OpenAiConfig() = default;
@@ -95,6 +96,7 @@ public:
     void set_base_url(std::string url) override;
     std::string base_url() const override;
     void set_api_key(std::string key) override;
+    void set_thinking_type(std::string type) override;
     std::expected<std::vector<std::string>, Error> list_models() override;
     std::string_view wire_format() const override { return "openai"; }
 

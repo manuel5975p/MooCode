@@ -2131,18 +2131,23 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // pre: no run() in progress (slash commands are refused while busy).
     auto switch_connection = [&](ProviderKind k, const std::string& base,
                                  const std::string& key, const std::string& mdl,
-                                 const std::string& profile_name) {
+                                 const std::string& profile_name,
+                                 const std::string& thinking_type = {}) {
         const bool same_kind = provider_kind_name(k) == info.provider;
         if (same_kind) {
             agent.provider().set_model(mdl);
             agent.provider().set_base_url(base);
             agent.provider().set_api_key(key);
+            // Same wire format but possibly a different endpoint's thinking
+            // dialect (e.g. z.ai/DeepSeek want "enabled", MiniMax wants
+            // "adaptive"); retune it so the next request is accepted.
+            agent.provider().set_thinking_type(thinking_type);
         } else {
             // carry includes max_tokens, so the connection's max_tokens stays 0
             // (provider default) and set_params(carry) reapplies the live cap.
             GenerationParams carry = agent.provider().params();
             agent.set_provider(
-                make_provider(ProviderConnection{.kind = k, .base_url = base, .api_key = key, .model = mdl, .max_tokens = 0}, carry));
+                make_provider(ProviderConnection{.kind = k, .base_url = base, .api_key = key, .model = mdl, .max_tokens = 0, .thinking_type = thinking_type}, carry));
         }
         info.model = mdl;
         info.base_url = base;
@@ -2239,7 +2244,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                      ProviderKind k = profile_kind(*p);
                      std::string key = key_for_profile(p->name);
                      switch_connection(k, p->base_url, key, std::string(arg),
-                                       p->name);
+                                       p->name, p->thinking_type);
                      state.push_info(
                          "model → " + std::string(arg) + "  (" + info.provider +
                          " · " + info.base_url +
@@ -2351,7 +2356,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                              std::ranges::find(p->models, p->model) ==
                                  p->models.end();
                          const std::string prof_name = p->name;
-                         switch_connection(k, p->base_url, key, mdl, prof_name);
+                         switch_connection(k, p->base_url, key, mdl, prof_name,
+                                           p->thinking_type);
                          state.push_info(
                              "provider → " + prof_name + "  (" + info.provider +
                              " · " + info.base_url + " · " + info.model +

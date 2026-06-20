@@ -63,8 +63,8 @@ nlohmann::json build_chat_request(const OpenAiConfig& cfg, const Conversation& c
     // strict OpenAI-compatible servers that reject unknown fields stay happy.
     if (!cfg.reasoning_effort.empty())
         req["reasoning_effort"] = cfg.reasoning_effort;
-    if (cfg.thinking)  // DeepSeek/MiniMax convention: thinking:{type:enabled|disabled}
-        req["thinking"]["type"] = *cfg.thinking ? "enabled" : "disabled";
+    if (cfg.thinking)  // DeepSeek/MiniMax convention: thinking:{type:enabled|disabled|adaptive}
+        req["thinking"]["type"] = *cfg.thinking ? cfg.thinking_type : "disabled";
     if (stream) {
         req["stream"] = true;
         req["stream_options"]["include_usage"] = true;
@@ -178,6 +178,7 @@ std::expected<Turn, Error> parse_chat_response(const nlohmann::json& body) {
 
 OpenAiConfig::OpenAiConfig(const ProviderConnection& c)
     : base_url(c.base_url), api_key(c.api_key), model(c.model),
+      thinking_type(c.thinking_type.empty() ? "enabled" : c.thinking_type),
       max_tokens(c.max_tokens) {}
 
 OpenAiProvider::OpenAiProvider(OpenAiConfig cfg) : cfg_(std::move(cfg)) {}
@@ -207,6 +208,11 @@ void OpenAiProvider::set_base_url(std::string url) { provider_set_base_url(cfg_.
 std::string OpenAiProvider::base_url() const { return provider_get_base_url(cfg_.base_url); }
 
 void OpenAiProvider::set_api_key(std::string key) { provider_set_api_key(cfg_.api_key, std::move(key)); }
+
+void OpenAiProvider::set_thinking_type(std::string type) {
+    // Mirror the constructor: an empty type means "use the backend default".
+    cfg_.thinking_type = type.empty() ? "enabled" : std::move(type);
+}
 
 std::expected<std::vector<std::string>, Error> OpenAiProvider::list_models() {
     std::string url = openai_models_url(cfg_.base_url);

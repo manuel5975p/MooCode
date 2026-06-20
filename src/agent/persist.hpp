@@ -38,6 +38,7 @@ struct Profile {
     std::vector<std::string> models;  // models this provider serves (/model lookup + autocomplete)
     int thinking = -1;                // -1 => unset (use global default), 0 => off, 1 => on
     bool drop_thinking_tag = false;   // omit the thinking field entirely (for endpoints that reject it)
+    std::string thinking_type = "enabled";  // thinking.type when reasoning is ON ("enabled" DeepSeek, "adaptive" MiniMax)
 };
 
 // Built-in profiles matching the former hardcoded model_registry, used when no

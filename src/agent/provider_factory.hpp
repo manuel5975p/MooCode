@@ -61,6 +61,10 @@ struct ProviderConnection {
     std::string api_key;
     std::string model;
     int max_tokens = 0;  // 0 => provider default
+    // thinking.type value the OpenAI backend emits when reasoning is ON.
+    // "enabled" (DeepSeek convention) by default; "adaptive" for MiniMax, which
+    // rejects "enabled". Empty => provider default ("enabled").
+    std::string thinking_type;
 };
 
 // Build the concrete Provider for `c.kind`, applying `gp` (set_params) before

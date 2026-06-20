@@ -91,7 +91,7 @@ std::string moocode_home() {
 const std::vector<Profile>& builtin_profiles() {
     static const std::vector<Profile> p = {
         {"minimax", "openai", "https://api.minimax.io/v1", "MiniMax-M3",
-         {"MiniMax-M3", "MiniMax-M1"}},
+         {"MiniMax-M3", "MiniMax-M1"}, -1, false, "adaptive"},
         {"deepseek", "openai", "https://api.deepseek.com/v1", "deepseek-v4-pro",
          {"deepseek-v4-pro", "deepseek-v4-flash"}},
         {"anthropic", "anthropic", "https://api.anthropic.com/v1",
@@ -151,6 +151,7 @@ Settings load_settings(const std::string& home) {
             if (auto v = (*pt)["model"].value<std::string>()) p.model = *v;
             if (auto v = (*pt)["thinking"].value<bool>()) p.thinking = *v ? 1 : 0;
             if (auto v = (*pt)["drop_thinking_tag"].value<bool>()) p.drop_thinking_tag = *v;
+            if (auto v = (*pt)["thinking_type"].value<std::string>()) p.thinking_type = *v;
             if (const toml::array* arr = (*pt)["models"].as_array())
                 for (const toml::node& n : *arr)
                     if (auto v = n.value<std::string>()) p.models.push_back(*v);
@@ -198,6 +199,8 @@ void save_settings(const std::string& home, const Settings& s) {
             if (!p->model.empty()) pt.insert("model", p->model);
             if (p->thinking >= 0) pt.insert("thinking", p->thinking != 0);
             if (p->drop_thinking_tag) pt.insert("drop_thinking_tag", true);
+            if (!p->thinking_type.empty() && p->thinking_type != "enabled")
+                pt.insert("thinking_type", p->thinking_type);
             if (!p->models.empty()) {
                 toml::array arr;
                 for (const std::string& m : p->models) arr.push_back(m);

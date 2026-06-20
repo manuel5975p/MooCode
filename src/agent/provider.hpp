@@ -153,6 +153,13 @@ struct Provider {
     // changes between profiles). The base default is a no-op.
     virtual void set_api_key(std::string key) { (void)key; }
 
+    // Change the thinking.type sent when reasoning is ON (TUI /model or
+    // /provider switching between profiles of the same wire format, e.g. one
+    // OpenAI-compatible endpoint that wants "enabled" and another that wants
+    // "adaptive"). The base default is a no-op; only backends that emit a
+    // thinking field need it. Empty means "use the backend default".
+    virtual void set_thinking_type(std::string type) { (void)type; }
+
     // List the model ids the endpoint advertises (for populating a profile's
     // model set / autocomplete). An Error means the listing call failed
     // (transport, non-2xx, unparseable); an empty vector means the endpoint
