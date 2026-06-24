@@ -27,6 +27,7 @@
 #include "agent/agent.hpp"
 #include "agent/builtin_tools.hpp"
 #include "agent/image_chip.hpp"
+#include "agent/paste_chip.hpp"        // collapsed-paste chip helpers
 #include "agent/image_util.hpp"
 #include "agent/json_util.hpp"  // parse spawn_subagent args for the group label
 #include "agent/mentions.hpp"
@@ -1996,6 +1997,31 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     std::vector<PastedImage> clip_images;
     int next_image_id = 1;
 
+    // Large bracketed pastes collapsed to an atomic `[Pasted text #N]` marker in
+    // the prompt (see paste_chip.hpp). The marker is the paste's handle: it shows
+    // compactly in the line and the chat log, behaves as a single character for
+    // cursor motion/deletion, survives recall from the input history, and is
+    // expanded back to the full bytes only in the text sent to the model. The
+    // id→content map persists for the whole session (it is *not* cleared on
+    // submit) so a paste whose marker comes back via the history (ArrowUp) still
+    // resolves to its bytes on a re-submit. Ids never reset, keeping every
+    // history entry's marker unambiguous.
+    struct PasteBlock {
+        int id;
+        std::string content;
+    };
+    std::vector<PasteBlock> paste_blocks;
+    int next_paste_id = 1;
+    // Collapse a paste only once it is genuinely large; smaller pastes splice in
+    // verbatim, exactly as before.
+    constexpr std::size_t kPasteCollapseBytes = 200;
+    // Resolve a paste id to its stored bytes (for expand_paste_chips on submit).
+    auto paste_lookup = [&](int id) -> std::optional<std::string_view> {
+        auto it = std::ranges::find(paste_blocks, id, &PasteBlock::id);
+        if (it == paste_blocks.end()) return std::nullopt;
+        return std::string_view(it->content);
+    };
+
     // Try to read an image from the system clipboard (wl-paste → xclip).
     // Returns the ImageBlock on success. Best-effort; errors are ignored.
     auto read_clipboard_image = []() -> std::optional<ImageBlock> {
@@ -2060,7 +2086,10 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         });
     };
 
-    // Clear input and reset paste/chip state.
+    // Clear input and reset image-chip state. Paste blocks are deliberately kept
+    // (and next_paste_id keeps climbing): a `[Pasted text #N]` marker recalled
+    // from the history must still expand on a later submit, so its bytes have to
+    // outlive the input that produced them.
     auto clear_input = [&] {
         input_content.clear();
         cursor_pos = 0;
@@ -2736,6 +2765,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         // the `[img#id]` markers to the readable `[image #id]` for the model.
         const std::vector<int> chip_ids = extract_chip_ids(line);
         expansion.prompt = strip_chips(expansion.prompt);
+
+        // Collapsed-paste markers: the displayed/history `line` keeps the compact
+        // `[Pasted text #N]`, but the model gets the full bytes spliced back in.
+        // A marker the session no longer knows (e.g. recalled from a prior run's
+        // on-disk history) is left as-is rather than dropped.
+        expansion.prompt = expand_paste_chips(expansion.prompt, paste_lookup);
 
         // Build multimodal content parts: text part first, then images from
         // @-mentions, direct image-path scanning, and pasted chips.
@@ -3601,7 +3636,29 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         if (pasting) {
             if (e == kPasteEnd) {
                 pasting = false;
-                if (!paste_buf.empty()) insert_at_cursor(paste_buf);
+                if (!paste_buf.empty()) {
+                    if (paste_buf.size() > kPasteCollapseBytes) {
+                        // Large paste: stash the bytes and splice in an atomic
+                        // `[Pasted text #N]` chip instead of the raw blob. The
+                        // chip's bytes are recovered on submit (expand_paste_chips)
+                        // and the marker survives history recall.
+                        const int id = next_paste_id++;
+                        const int lines = 1 + static_cast<int>(std::count(
+                                                  paste_buf.begin(),
+                                                  paste_buf.end(), '\n'));
+                        paste_blocks.push_back(PasteBlock{id, paste_buf});
+                        const std::string chip = paste_chip(id);
+                        insert_at_cursor(chip);
+                        std::lock_guard lk(state_mtx);
+                        state.push_info(
+                            "📋 " + chip + " collapsed (" + std::to_string(lines) +
+                            " line" + (lines == 1 ? "" : "s") + ", " +
+                            human_tokens(static_cast<int>(paste_buf.size())) +
+                            " chars) — Backspace to remove");
+                    } else {
+                        insert_at_cursor(paste_buf);
+                    }
+                }
                 paste_buf.clear();
                 post();
                 return true;
@@ -4206,6 +4263,9 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             if (!history.empty() && hist_pos > 0) {
                 --hist_pos;
                 input_content = history[hist_pos];
+                // Land the cursor at the end of the recalled line so it never
+                // sits stale inside a chip (and matches shell history recall).
+                cursor_pos = static_cast<int>(input_content.size());
             }
             return true;
         }
@@ -4213,6 +4273,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             if (hist_pos < history.size()) {
                 ++hist_pos;
                 input_content = hist_pos == history.size() ? "" : history[hist_pos];
+                cursor_pos = static_cast<int>(input_content.size());
             }
             return true;
         }
@@ -4323,15 +4384,54 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             post();
             return true;
         }
-        // Backspace immediately to the right of an image chip removes the whole
-        // `[img#id]` in one keystroke (and detaches its image) instead of
-        // nibbling its bytes. cursor_pos is a byte offset (FTXUI convention), so
-        // chip_ending_at works directly. Anything else falls through to Input.
+        // Chips behave as a single character: one keystroke skips or deletes a
+        // whole `[Pasted text #N]` / `[img#N]` token rather than nibbling its
+        // bytes. cursor_pos is a byte offset (FTXUI convention) and the markers
+        // are ASCII, so the byte ranges line up with glyphs. Each handler falls
+        // through to the Input when the cursor isn't flush against a chip.
+        auto chip_cur = [&] {
+            return std::min(static_cast<std::size_t>(std::max(0, cursor_pos)),
+                            input_content.size());
+        };
+        // ArrowLeft / ArrowRight: hop over a paste chip in one step.
+        if (e == Event::ArrowLeft) {
+            if (auto r = paste_chip_ending_at(input_content, chip_cur())) {
+                cursor_pos = static_cast<int>(r->first);
+                post();
+                return true;
+            }
+            return false;
+        }
+        if (e == Event::ArrowRight) {
+            if (auto r = paste_chip_starting_at(input_content, chip_cur())) {
+                cursor_pos = static_cast<int>(r->second);
+                post();
+                return true;
+            }
+            return false;
+        }
+        // Delete: forward-delete a whole paste chip sitting just right of the
+        // cursor. (Its bytes stay stashed in case the same marker is re-entered.)
+        if (e == Event::Delete) {
+            if (auto r = paste_chip_starting_at(input_content, chip_cur())) {
+                input_content.erase(r->first, r->second - r->first);
+                cursor_pos = static_cast<int>(r->first);
+                post();
+                return true;
+            }
+            return false;
+        }
+        // Backspace just right of a chip removes the whole token in one keystroke
+        // (an image chip also detaches its image). Try the paste chip first, then
+        // the image chip; anything else falls through to the Input.
         if (e == Event::Backspace) {
-            auto range = chip_ending_at(
-                input_content,
-                std::min(static_cast<std::size_t>(std::max(0, cursor_pos)),
-                         input_content.size()));
+            if (auto r = paste_chip_ending_at(input_content, chip_cur())) {
+                input_content.erase(r->first, r->second - r->first);
+                cursor_pos = static_cast<int>(r->first);
+                post();
+                return true;
+            }
+            auto range = chip_ending_at(input_content, chip_cur());
             if (!range) return false;  // ordinary single-glyph backspace
             input_content.erase(range->first, range->second - range->first);
             cursor_pos = static_cast<int>(range->first);

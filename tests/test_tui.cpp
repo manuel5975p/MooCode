@@ -7,6 +7,7 @@
 #include "agent/tui.hpp"
 
 #include "agent/image_chip.hpp"   // pasted-image chip helpers
+#include "agent/paste_chip.hpp"   // collapsed-paste chip helpers
 #include "agent/permissions.hpp"  // Approval (also re-exported via tui.hpp)
 #include "agent/tui_text.hpp"     // sanitize_tui_text
 
@@ -756,6 +757,93 @@ TEST("strip_chips: rewrites chips, leaves other text intact") {
     CHECK_EQ(strip_chips("no chips at all"), std::string("no chips at all"));
     CHECK_EQ(strip_chips("[img#] stays, [img#9] goes"),
              std::string("[img#] stays, [image #9] goes"));
+}
+
+// ---- collapsed-paste chips (agent/paste_chip.hpp) ------------------------
+
+TEST("paste_chip: formats an ASCII marker") {
+    CHECK_EQ(paste_chip(1), std::string("[Pasted text #1]"));
+    CHECK_EQ(paste_chip(42), std::string("[Pasted text #42]"));
+}
+
+TEST("parse_paste_chip_at: matches only a chip starting exactly at pos") {
+    std::string t = "a [Pasted text #7] b";
+    auto p = parse_paste_chip_at(t, 2);  // '[' is at index 2
+    CHECK(p.has_value());
+    CHECK_EQ(p->first, std::size_t{2 + std::string("[Pasted text #7]").size()});
+    CHECK_EQ(p->second, 7);
+    CHECK(!parse_paste_chip_at(t, 3).has_value());  // mid-chip
+    CHECK(!parse_paste_chip_at(t, 0).has_value());  // before it
+    CHECK(!parse_paste_chip_at("plain", 0).has_value());
+    CHECK(!parse_paste_chip_at("[Pasted text #]", 0).has_value());   // no digits
+    CHECK(!parse_paste_chip_at("[Pasted text #9", 0).has_value());   // unterminated
+}
+
+TEST("extract_paste_ids: order preserved, deduplicated, skips malformed") {
+    auto ids = extract_paste_ids(
+        "see [Pasted text #2] and [Pasted text #1] then [Pasted text #2]");
+    CHECK_EQ(ids.size(), std::size_t{2});
+    CHECK_EQ(ids[0], 2);
+    CHECK_EQ(ids[1], 1);
+    CHECK_EQ(extract_paste_ids("nothing here").size(), std::size_t{0});
+    CHECK_EQ(extract_paste_ids("[Pasted text #x] [Pasted text #1").size(),
+             std::size_t{0});
+}
+
+TEST("paste_chip_ending_at: whole chip just left of the cursor") {
+    std::string t = "x [Pasted text #3]";
+    auto r = paste_chip_ending_at(t, t.size());  // cursor right after ']'
+    CHECK(r.has_value());
+    CHECK_EQ(r->first, std::size_t{2});
+    CHECK_EQ(r->second, t.size());
+    CHECK_EQ(t.substr(r->first, r->second - r->first),
+             std::string("[Pasted text #3]"));
+    CHECK(!paste_chip_ending_at(t, 0).has_value());        // very start
+    CHECK(!paste_chip_ending_at(t, 6).has_value());        // mid-chip
+    CHECK(!paste_chip_ending_at("x [Pasted text #3] y", 20).has_value());
+}
+
+TEST("paste_chip_ending_at: adjacent chips resolve to the one at the cursor") {
+    std::string t = "[Pasted text #1][Pasted text #2]";
+    auto r1 = paste_chip_ending_at(t, 16);  // after the first ']'
+    CHECK(r1.has_value());
+    CHECK_EQ(r1->first, std::size_t{0});
+    CHECK_EQ(r1->second, std::size_t{16});
+    auto r2 = paste_chip_ending_at(t, t.size());
+    CHECK(r2.has_value());
+    CHECK_EQ(r2->first, std::size_t{16});
+}
+
+TEST("paste_chip_starting_at: whole chip just right of the cursor") {
+    std::string t = "[Pasted text #5] tail";
+    auto r = paste_chip_starting_at(t, 0);
+    CHECK(r.has_value());
+    CHECK_EQ(r->first, std::size_t{0});
+    CHECK_EQ(r->second, std::string("[Pasted text #5]").size());
+    CHECK(!paste_chip_starting_at(t, 1).has_value());  // not at the '['
+}
+
+TEST("expand_paste_chips: known ids expand, unknown stay literal") {
+    auto lookup = [](int id) -> std::optional<std::string_view> {
+        if (id == 1) return std::string_view("line A\nline B");
+        return std::nullopt;
+    };
+    CHECK_EQ(expand_paste_chips("pre [Pasted text #1] post", lookup),
+             std::string("pre line A\nline B post"));
+    // An id the session no longer knows is left untouched, not dropped.
+    CHECK_EQ(expand_paste_chips("keep [Pasted text #9]", lookup),
+             std::string("keep [Pasted text #9]"));
+    CHECK_EQ(expand_paste_chips("no chips", lookup), std::string("no chips"));
+}
+
+TEST("expand_paste_chips: multiple chips in one line") {
+    auto lookup = [](int id) -> std::optional<std::string_view> {
+        if (id == 1) return std::string_view("AAA");
+        if (id == 2) return std::string_view("BBB");
+        return std::nullopt;
+    };
+    CHECK_EQ(expand_paste_chips("[Pasted text #1]+[Pasted text #2]", lookup),
+             std::string("AAA+BBB"));
 }
 
 // --- sanitize_tui_text -------------------------------------------------------
