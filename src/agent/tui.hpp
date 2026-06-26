@@ -181,14 +181,24 @@ public:
         if (r && !running_) busy_seed_ = chat_.size();
         running_ = r;
     }
-    void set_usage(int tokens) { tokens_ = tokens; has_tokens_ = true; }
+    // Record token usage as separate input (prompt/context) and output
+    // (generated) components. The status bar shows input against the context
+    // window plus the output it is generating; on_delta feeds a live heuristic
+    // for output, on_usage overwrites both with the API's real counts.
+    void set_usage(int input, int output) {
+        input_tokens_ = input;
+        output_tokens_ = output;
+        has_tokens_ = true;
+    }
 
     // The parent agent's current model, used as the fallback model for a
     // spawn_subagent group when the call carries no explicit "model" arg.
     // Set whenever the live model changes (and before each turn).
     void set_parent_model(std::string m) { parent_model_ = std::move(m); }
     const std::string& parent_model() const { return parent_model_; }
-    int tokens() const { return tokens_; }
+    int input_tokens() const { return input_tokens_; }
+    int output_tokens() const { return output_tokens_; }
+    int tokens() const { return input_tokens_ + output_tokens_; }
     bool has_tokens() const { return has_tokens_; }
 
     // Active code-block colour scheme, read by the renderer.
@@ -270,7 +280,8 @@ private:
     std::optional<NodeKey> selection_;  // navigable-node selection (or none)
     bool running_ = false;
     bool reasoning_collapsed_ = true;  // default: show token estimate, F2 expands
-    int tokens_ = 0;
+    int input_tokens_ = 0;
+    int output_tokens_ = 0;
     bool has_tokens_ = false;
     std::size_t busy_seed_ = 0;    // status-bar busy-word selector, per turn
     std::string parent_model_;     // fallback model for spawn_subagent groups

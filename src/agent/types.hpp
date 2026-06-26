@@ -166,6 +166,20 @@ struct ToolSpec {
     nlohmann::json parameters;  // JSON Schema object
 };
 
+// A per-(endpoint, model) allowlist of non-standard OpenAI request params the
+// backend should be told to pass through. Some OpenAI-compatible proxies drop
+// unknown fields (e.g. reasoning_effort) unless the request itself echoes them
+// in an "allowed_openai_params" array; pinning the allowlist to one base_url +
+// model lets a single proxy gate it per model. Lives here (shared base layer)
+// so both agent_persist (Settings) and the provider layer name one type.
+// Matched tolerant of a trailing slash on base_url and case-insensitively on
+// model; empty `params` => emit nothing.
+struct AllowedOpenAiParams {
+    std::string base_url;
+    std::string model;
+    std::vector<std::string> params;  // e.g. {"reasoning_effort"}
+};
+
 // Syntax-highlight colour scheme for fenced code blocks. Lived in tui.hpp but
 // moved here so the lightweight tui_slash.hpp can name it without pulling in
 // the full tui.hpp + transitive deps. "None" disables highlighting.

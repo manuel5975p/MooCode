@@ -786,7 +786,7 @@ int main(int argc, char** argv) {
     // truth with the TUI's runtime provider swaps). Both satisfy Provider&, so
     // the agent loop is identical; only the request/response shape differs.
     std::unique_ptr<Provider> provider = make_provider(
-        ProviderConnection{.kind = kind, .base_url = base_url, .api_key = api_key, .model = model, .max_tokens = max_tokens, .thinking_type = conn_thinking_type}, gp);
+        ProviderConnection{.kind = kind, .base_url = base_url, .api_key = api_key, .model = model, .max_tokens = max_tokens, .thinking_type = conn_thinking_type, .allowed_openai_params = settings.allowed_openai_params}, gp);
 
     // Soft warning: reasoning controls were requested on an OpenAI-compatible
     // model that probably ignores reasoning_effort/thinking. (Anthropic always
@@ -850,7 +850,8 @@ int main(int argc, char** argv) {
         // the TUI's key_for_profile, but falls back to the session key when the
         // stored per-profile credential is missing or empty.
         scfg.make_provider_for_model =
-            [sub_profiles, sub_creds, key = api_key](const std::string& model)
+            [sub_profiles, sub_creds, key = api_key,
+             sub_allowed = settings.allowed_openai_params](const std::string& model)
             -> std::expected<std::unique_ptr<Provider>, Error> {
             const Profile* p = find_model_profile(model, sub_profiles);
             if (!p)
@@ -867,7 +868,8 @@ int main(int argc, char** argv) {
                                     .api_key = api,
                                     .model = model,
                                     .max_tokens = 0,
-                                    .thinking_type = p->thinking_type};
+                                    .thinking_type = p->thinking_type,
+                                    .allowed_openai_params = sub_allowed};
             return make_provider(conn, GenerationParams{});
         };
         // The unrestricted tool is always advertised. The restricted variant is

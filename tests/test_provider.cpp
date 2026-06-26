@@ -121,6 +121,75 @@ TEST("build_chat_request: stream flag set when requested") {
     if (req.contains("stream")) CHECK_EQ(req["stream"], true);
 }
 
+// --- allowed_openai_params --------------------------------------------------
+
+TEST("build_chat_request: no allowed_openai_params key when unconfigured") {
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cfg(), c, {});
+    CHECK(!req.contains("allowed_openai_params"));
+}
+
+TEST("build_chat_request: emits allowed_openai_params on matching url+model") {
+    auto cc = cfg();
+    cc.reasoning_effort = "high";
+    cc.allowed_openai_params = {
+        {"https://api.example/v1", "test-model", {"reasoning_effort"}}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(req.contains("allowed_openai_params"));
+    if (req.contains("allowed_openai_params")) {
+        CHECK(req["allowed_openai_params"].is_array());
+        CHECK_EQ(req["allowed_openai_params"].size(), std::size_t(1));
+        CHECK_EQ(req["allowed_openai_params"][0], std::string("reasoning_effort"));
+    }
+    // The gated param itself is still emitted independently.
+    CHECK_EQ(req["reasoning_effort"], std::string("high"));
+}
+
+TEST("build_chat_request: allowed_openai_params match tolerates trailing slash") {
+    auto cc = cfg();  // base_url ends in "/v1" (no slash)
+    cc.allowed_openai_params = {
+        {"https://api.example/v1/", "test-model", {"reasoning_effort"}}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(req.contains("allowed_openai_params"));
+}
+
+TEST("build_chat_request: allowed_openai_params model match is case-insensitive") {
+    auto cc = cfg();  // model "test-model"
+    cc.allowed_openai_params = {
+        {"https://api.example/v1", "TEST-MODEL", {"reasoning_effort"}}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(req.contains("allowed_openai_params"));
+}
+
+TEST("build_chat_request: allowed_openai_params skipped on model mismatch") {
+    auto cc = cfg();  // model "test-model"
+    cc.allowed_openai_params = {
+        {"https://api.example/v1", "other-model", {"reasoning_effort"}}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(!req.contains("allowed_openai_params"));
+}
+
+TEST("build_chat_request: allowed_openai_params skipped on url mismatch") {
+    auto cc = cfg();  // base_url "https://api.example/v1"
+    cc.allowed_openai_params = {
+        {"https://other.example/v1", "test-model", {"reasoning_effort"}}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(!req.contains("allowed_openai_params"));
+}
+
+TEST("build_chat_request: empty params list emits nothing even on match") {
+    auto cc = cfg();
+    cc.allowed_openai_params = {{"https://api.example/v1", "test-model", {}}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(!req.contains("allowed_openai_params"));
+}
+
 // --- parse_chat_response ----------------------------------------------------
 
 TEST("parse_chat_response: text-only answer") {
@@ -443,6 +512,45 @@ TEST("complete_stream: HTTP 401 with a JSON error body surfaces as Error") {
     srv.stop();
     CHECK(!t.has_value());
     if (!t) CHECK(t.error().msg.find("unauthorized") != std::string::npos);
+}
+
+TEST("complete_stream: retries past a transient 502 and recovers") {
+    // A proxy 502 (HTML body, the exact shape from the field report) on the
+    // first attempt, a clean SSE stream on the second. The provider must ride
+    // out the blip and assemble the Turn instead of failing the whole turn.
+    test::LoopbackServer srv;
+    srv.serve_each(
+        {{502, "<html><head><title>502 Bad Gateway</title></head></html>"},
+         {200, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},"
+               "\"finish_reason\":\"stop\"}]}\n\n"
+               "data: [DONE]\n\n"}});
+    OpenAiConfig cf = cfg();
+    cf.base_url = srv.url("");
+    OpenAiProvider p(cf);
+    Conversation c{Message::user("hi")};
+    std::string answer;
+    auto t = p.complete_stream(
+        c, {}, [&](std::string_view a, std::string_view) { answer.append(a); });
+    srv.stop();
+    CHECK(t.has_value());
+    if (t) CHECK_EQ(t->text, std::string("ok"));
+    CHECK_EQ(answer, std::string("ok"));
+}
+
+TEST("complete: retries past a transient 500 and recovers") {
+    test::LoopbackServer srv;
+    srv.serve_each(
+        {{500, R"({"error":{"message":"Connection error"}})"},
+         {200, R"({"choices":[{"message":{"content":"hi"},)"
+               R"("finish_reason":"stop"}]})"}});
+    OpenAiConfig cf = cfg();
+    cf.base_url = srv.url("");
+    OpenAiProvider p(cf);
+    Conversation c{Message::user("hi")};
+    auto t = p.complete(c, {});
+    srv.stop();
+    CHECK(t.has_value());
+    if (t) CHECK_EQ(t->text, std::string("hi"));
 }
 
 TEST("parse_chat_response: captures usage when present") {

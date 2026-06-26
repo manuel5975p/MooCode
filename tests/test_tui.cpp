@@ -690,12 +690,16 @@ TEST("human_duration formats ms, seconds and minutes") {
     CHECK_EQ(human_duration(milliseconds{123'000}), std::string("2m03s"));
 }
 
-TEST("TuiState: usage starts absent and set_usage records it") {
+TEST("TuiState: usage starts absent and set_usage records input/output") {
     TuiState s;
     CHECK(!s.has_tokens());
-    s.set_usage(1500);
+    CHECK_EQ(s.input_tokens(), 0);
+    CHECK_EQ(s.output_tokens(), 0);
+    s.set_usage(1500, 320);
     CHECK(s.has_tokens());
-    CHECK_EQ(s.tokens(), 1500);
+    CHECK_EQ(s.input_tokens(), 1500);
+    CHECK_EQ(s.output_tokens(), 320);
+    CHECK_EQ(s.tokens(), 1820);  // total = input + output
 }
 
 // ---- pasted-image chips (agent/image_chip.hpp) ---------------------------

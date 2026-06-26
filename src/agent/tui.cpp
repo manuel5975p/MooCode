@@ -1597,20 +1597,27 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             post();
         };
 
-    // Live-token estimate across turns. `last_real_total` holds the last real
-    // usage reported by on_usage (prompt + completion across all prior turns).
-    // During streaming, we add a per-turn character-based estimate so the
-    // status-bar counter climbs in real time as answer/reasoning text arrives.
-    // On the next on_usage the real total replaces the estimate cleanly.
-    int last_real_total = 0;
+    // Live token accounting for the status bar, split into input (prompt /
+    // context) and output (generated). `last_input` holds the prompt size of the
+    // call in flight; `last_output` the last real completion count. While a call
+    // streams we estimate output from the bytes seen (~4 bytes/token) so the
+    // counter climbs in real time, and re-estimate input from the conversation
+    // at the first delta of each API call (the prior answer + tool results have
+    // already been appended). On_usage then overwrites both with the API's real
+    // counts. `turn_chars == 0` marks the first delta of a fresh call: usage
+    // resets it after every reply.
+    int last_input = 0;
+    int last_output = 0;
     int turn_chars = 0;
     agent.on_delta([&](std::string_view a, std::string_view r) {
         {
             std::lock_guard lk(state_mtx);
             state.apply_delta(a, r);
+            if (turn_chars == 0)  // first delta of this call: refresh input est.
+                last_input = estimated_tokens(agent.history());
             turn_chars += static_cast<int>(a.size() + r.size());
-            int est = std::max(1, turn_chars / 4);
-            state.set_usage(last_real_total + est);
+            last_output = std::max(1, turn_chars / 4);
+            state.set_usage(last_input, last_output);
         }
         post();
     });
@@ -1624,9 +1631,10 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     agent.on_usage([&](const Usage& u) {
         {
             std::lock_guard lk(state_mtx);
-            last_real_total = u.prompt_tokens + u.completion_tokens;
-            state.set_usage(last_real_total);
-            turn_chars = 0;  // next turn starts its own live estimate
+            last_input = u.prompt_tokens;
+            last_output = u.completion_tokens;
+            state.set_usage(last_input, last_output);
+            turn_chars = 0;  // next call streams its own live estimate
         }
         post();
     });
@@ -2124,6 +2132,10 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     std::vector<Profile> profiles = load_settings(info.home).profiles;
     if (profiles.empty()) profiles = default_profiles();
     std::map<std::string, std::string> credentials = load_credentials(info.home);
+    // Request-param passthrough allowlists, carried into any provider rebuilt on
+    // a runtime wire-format switch so /model swaps keep the (url,model) gating.
+    std::vector<AllowedOpenAiParams> allowed_openai_params =
+        load_settings(info.home).allowed_openai_params;
 
     // Flat, sorted, de-duplicated model name list for /model autocomplete.
     auto rebuild_model_names = [&] {
@@ -2141,6 +2153,16 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // it (then /model only changes the model string, keeping the endpoint).
     auto find_model_profile = [&](std::string_view name) -> const Profile* {
         return moocode::find_model_profile(name, profiles);
+    };
+
+    // The blacklist of the named profile (empty/unknown name => the active
+    // profile's, else none). Detected model sets are filtered through this so a
+    // dead-but-advertised id never reaches the picker, autocomplete, or disk.
+    auto blacklist_for = [&](const std::string& name) -> std::vector<std::string> {
+        const std::string& key = name.empty() ? info.profile : name;
+        for (const Profile& p : profiles)
+            if (p.name == key) return p.blacklist;
+        return {};
     };
 
     // The session key for the active profile (credentials.toml else the startup
@@ -2176,7 +2198,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             // (provider default) and set_params(carry) reapplies the live cap.
             GenerationParams carry = agent.provider().params();
             agent.set_provider(
-                make_provider(ProviderConnection{.kind = k, .base_url = base, .api_key = key, .model = mdl, .max_tokens = 0, .thinking_type = thinking_type}, carry));
+                make_provider(ProviderConnection{.kind = k, .base_url = base, .api_key = key, .model = mdl, .max_tokens = 0, .thinking_type = thinking_type, .allowed_openai_params = allowed_openai_params}, carry));
         }
         info.model = mdl;
         info.base_url = base;
@@ -2267,8 +2289,99 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             {"/model", {},
              [&](std::string_view arg) {
                  std::lock_guard lk(state_mtx);
+                 // Split off a leading subcommand word ("blacklist"/"unblacklist").
+                 const std::string a(arg);
+                 std::string sub = a, rest;
+                 if (auto sp = a.find_first_of(" \t"); sp != std::string::npos) {
+                     sub = a.substr(0, sp);
+                     auto b = a.find_first_not_of(" \t", sp);
+                     rest = (b == std::string::npos) ? std::string() : a.substr(b);
+                 }
+                 const std::string subl = to_lower(sub);
+                 if (subl == "blacklist" || subl == "unblacklist") {
+                     const bool add = subl == "blacklist";
+                     auto ieq = [](std::string_view x, std::string_view y) {
+                         return to_lower(x) == to_lower(y);
+                     };
+                     Profile* slot = nullptr;
+                     for (Profile& p : profiles)
+                         if (p.name == info.profile) { slot = &p; break; }
+                     if (!slot) {
+                         state.push_error(
+                             "/model " + subl +
+                             " needs an active saved profile (use /provider "
+                             "save <name> first)");
+                         return;
+                     }
+                     std::string id = rest;
+                     if (id.empty() && add) id = info.model;  // default: current
+                     if (id.empty()) {  // bare /model blacklist => list it
+                         std::string msg = "blacklist for '" + slot->name + "':";
+                         if (slot->blacklist.empty()) msg += " (empty)";
+                         for (const std::string& b : slot->blacklist)
+                             msg += "\n  " + b;
+                         state.push_info(msg);
+                         return;
+                     }
+                     if (add) {
+                         if (std::ranges::none_of(slot->blacklist,
+                                 [&](const std::string& b) { return ieq(b, id); }))
+                             slot->blacklist.push_back(id);
+                         std::erase_if(slot->models,
+                             [&](const std::string& m) { return ieq(m, id); });
+                     } else {
+                         std::erase_if(slot->blacklist,
+                             [&](const std::string& b) { return ieq(b, id); });
+                     }
+                     // Don't leave the profile's saved default pointing at a
+                     // blacklisted id, or startup would re-select it.
+                     if (add && ieq(slot->model, id))
+                         slot->model = slot->models.empty()
+                                           ? std::string()
+                                           : slot->models.front();
+                     model_names = rebuild_model_names();
+                     if (!info.home.empty()) {  // persist blacklist + model set
+                         Settings s = load_settings(info.home);
+                         bool merged = false;
+                         for (Profile& p : s.profiles)
+                             if (p.name == slot->name) {
+                                 p.blacklist = slot->blacklist;
+                                 p.models = slot->models;
+                                 p.model = slot->model;
+                                 merged = true;
+                                 break;
+                             }
+                         if (!merged) s.profiles.push_back(*slot);
+                         save_settings(info.home, s);
+                     }
+                     // If the just-blacklisted id is the live model, move off it.
+                     if (add && ieq(info.model, id)) {
+                         std::string next;
+                         if (!slot->model.empty() && !ieq(slot->model, id))
+                             next = slot->model;
+                         else if (!slot->models.empty())
+                             next = slot->models.front();
+                         if (!next.empty()) {
+                             agent.provider().set_model(next);
+                             info.model = next;
+                             meta.model = next;
+                             state.push_info("blacklisted " + id +
+                                             " — model → " + next);
+                         } else {
+                             state.push_error(
+                                 "blacklisted " + id +
+                                 " (still the live model; no replacement left)");
+                         }
+                     } else {
+                         state.push_info((add ? "blacklisted " : "un-blacklisted ") +
+                                         id + "  ('" + slot->name + "')");
+                     }
+                     return;
+                 }
                  if (arg.empty()) {
-                     state.push_error("usage: /model <name>");
+                     state.push_error(
+                         "usage: /model <name> | /model blacklist <id> | "
+                         "/model unblacklist <id>");
                  } else if (const Profile* p = find_model_profile(arg)) {
                      ProviderKind k = profile_kind(*p);
                      std::string key = key_for_profile(p->name);
@@ -2285,7 +2398,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                      state.push_info("model → " + std::string(arg));
                  }
              },
-             [&] { return model_names; }},
+             [&] {
+                 std::vector<std::string> c = model_names;
+                 c.push_back("blacklist");
+                 c.push_back("unblacklist");
+                 return c;
+             }},
             {"/provider", {},
              [&](std::string_view arg) {
                  std::lock_guard lk(state_mtx);
@@ -3049,11 +3167,15 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             last_detail = dk;
         }
 
+        // Token meter: ↑input (against the context window) and ↓output, the
+        // latter a live ~4 bytes/token estimate while streaming, corrected to
+        // the API's count once the reply lands.
         std::string tok = glyphify("▣ ");
         if (state.has_tokens()) {
-            tok += human_tokens(state.tokens());
+            tok += glyphify("↑") + human_tokens(state.input_tokens());
             if (info.context_window > 0)
-                tok += " / " + human_tokens(info.context_window);
+                tok += "/" + human_tokens(info.context_window);
+            tok += glyphify(" ↓") + human_tokens(state.output_tokens());
         } else {
             tok += glyphify("—");
         }
@@ -3522,9 +3644,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             if (!r.bulk.empty()) {
                 std::size_t total = 0;
                 for (auto& [name, ids] : r.bulk) {
+                    std::vector<std::string> kept =
+                        filter_blacklisted(ids, blacklist_for(name));
                     for (Profile& p : profiles)
-                        if (p.name == name) { p.models = ids; break; }
-                    total += ids.size();
+                        if (p.name == name) { p.models = kept; break; }
+                    total += kept.size();
                 }
                 model_names = rebuild_model_names();
                 state.push_info("fetched " + std::to_string(total) +
@@ -3534,6 +3658,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             }
             // Single-profile silent refresh.
             if (!r.ok || r.models.empty()) return;
+            r.models = filter_blacklisted(r.models, blacklist_for(r.profile));
             for (Profile& p : profiles)
                 if (p.name == r.profile) { p.models = r.models; break; }
             model_names = rebuild_model_names();
@@ -3545,6 +3670,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             state.push_error("model detection failed (" + r.base + "): " + r.error);
             return;
         }
+        r.models = filter_blacklisted(r.models, blacklist_for(r.profile));
         if (r.models.empty()) {
             state.push_info("no models reported by " + r.base + " — keeping " +
                             info.model);

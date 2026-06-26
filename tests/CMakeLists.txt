@@ -19,6 +19,9 @@ moocode_add_test(test_stream test_stream.cpp agent_stream agent_json)
 moocode_add_test(test_provider test_provider.cpp agent_provider agent_json)
 target_link_libraries(test_provider PRIVATE Threads::Threads)
 
+moocode_add_test(test_retry test_retry.cpp agent_types)
+target_link_libraries(test_retry PRIVATE Threads::Threads)
+
 moocode_add_test(test_anthropic_provider test_anthropic_provider.cpp
                  agent_provider agent_json agent_stream)
 target_link_libraries(test_anthropic_provider PRIVATE Threads::Threads)

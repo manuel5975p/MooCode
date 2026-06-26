@@ -30,6 +30,11 @@ struct OpenAiConfig {
     std::optional<bool> thinking;        // nullopt => omit; else thinking:{type}
     std::string thinking_type = "enabled";  // thinking.type when ON ("enabled" DeepSeek, "adaptive" MiniMax)
     int max_tokens = 0;                  // <= 0 => omit; else max_tokens
+    // Per-(base_url, model) request-param passthrough allowlists. The matching
+    // entry (by the live base_url + model) contributes an "allowed_openai_params"
+    // array to the request, so proxies that gate fields like reasoning_effort
+    // see them. No match => the key is omitted entirely.
+    std::vector<AllowedOpenAiParams> allowed_openai_params;
 
     OpenAiConfig() = default;
     explicit OpenAiConfig(const struct ProviderConnection& c);

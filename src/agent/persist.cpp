@@ -91,7 +91,7 @@ std::string moocode_home() {
 const std::vector<Profile>& builtin_profiles() {
     static const std::vector<Profile> p = {
         {"minimax", "openai", "https://api.minimax.io/v1", "MiniMax-M3",
-         {"MiniMax-M3", "MiniMax-M1"}, -1, false, "adaptive"},
+         {"MiniMax-M3", "MiniMax-M1"}, {}, -1, false, "adaptive"},
         {"deepseek", "openai", "https://api.deepseek.com/v1", "deepseek-v4-pro",
          {"deepseek-v4-pro", "deepseek-v4-flash"}},
         {"anthropic", "anthropic", "https://api.anthropic.com/v1",
@@ -113,6 +113,21 @@ const std::vector<Profile>& builtin_profiles() {
         {"grok", "openai", "https://api.x.ai/v1", "grok-4", {"grok-4"}},
     };
     return p;
+}
+
+std::vector<std::string> filter_blacklisted(
+    const std::vector<std::string>& models,
+    const std::vector<std::string>& blacklist) {
+    if (blacklist.empty()) return models;
+    std::vector<std::string> denied;
+    denied.reserve(blacklist.size());
+    for (const std::string& b : blacklist) denied.push_back(to_lower(b));
+    std::vector<std::string> out;
+    out.reserve(models.size());
+    for (const std::string& m : models)
+        if (std::ranges::find(denied, to_lower(m)) == denied.end())
+            out.push_back(m);
+    return out;
 }
 
 // --- settings ---------------------------------------------------------------
@@ -155,11 +170,32 @@ Settings load_settings(const std::string& home) {
             if (const toml::array* arr = (*pt)["models"].as_array())
                 for (const toml::node& n : *arr)
                     if (auto v = n.value<std::string>()) p.models.push_back(*v);
+            if (const toml::array* arr = (*pt)["blacklist"].as_array())
+                for (const toml::node& n : *arr)
+                    if (auto v = n.value<std::string>()) p.blacklist.push_back(*v);
             s.profiles.push_back(std::move(p));
         }
         std::ranges::sort(s.profiles, [](const Profile& a, const Profile& b) {
             return a.name < b.name;
         });
+    }
+
+    // [[allowed_openai_params]]: array of {base_url, model, params=[...]} tables.
+    // Order is preserved (no sort) so the file round-trips as written; matching
+    // is by content, not position. Entries missing `params` are kept (empty =>
+    // nothing emitted) so a partially-written entry never errors the load.
+    if (const toml::array* arr = t["allowed_openai_params"].as_array()) {
+        for (const toml::node& n : *arr) {
+            const toml::table* et = n.as_table();
+            if (!et) continue;
+            AllowedOpenAiParams e;
+            if (auto v = (*et)["base_url"].value<std::string>()) e.base_url = *v;
+            if (auto v = (*et)["model"].value<std::string>()) e.model = *v;
+            if (const toml::array* ps = (*et)["params"].as_array())
+                for (const toml::node& pn : *ps)
+                    if (auto v = pn.value<std::string>()) e.params.push_back(*v);
+            s.allowed_openai_params.push_back(std::move(e));
+        }
     }
     return s;
 }
@@ -206,9 +242,30 @@ void save_settings(const std::string& home, const Settings& s) {
                 for (const std::string& m : p->models) arr.push_back(m);
                 pt.insert("models", std::move(arr));
             }
+            if (!p->blacklist.empty()) {
+                toml::array arr;
+                for (const std::string& m : p->blacklist) arr.push_back(m);
+                pt.insert("blacklist", std::move(arr));
+            }
             profs.insert(p->name, std::move(pt));
         }
         t.insert("profiles", std::move(profs));
+    }
+
+    // [[allowed_openai_params]] array-of-tables, written in the in-memory order
+    // (no sort: these have no natural key and the file order is the user's).
+    if (!s.allowed_openai_params.empty()) {
+        toml::array arr;
+        for (const AllowedOpenAiParams& e : s.allowed_openai_params) {
+            toml::table et;
+            if (!e.base_url.empty()) et.insert("base_url", e.base_url);
+            if (!e.model.empty()) et.insert("model", e.model);
+            toml::array ps;
+            for (const std::string& p : e.params) ps.push_back(p);
+            et.insert("params", std::move(ps));
+            arr.push_back(std::move(et));
+        }
+        t.insert("allowed_openai_params", std::move(arr));
     }
     std::ofstream out(home + "/settings.toml", std::ios::binary | std::ios::trunc);
     if (out) out << t << '\n';

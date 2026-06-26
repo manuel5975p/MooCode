@@ -36,6 +36,7 @@ struct Profile {
     std::string base_url;
     std::string model;                // default model when this profile is selected
     std::vector<std::string> models;  // models this provider serves (/model lookup + autocomplete)
+    std::vector<std::string> blacklist;  // model ids to drop from detection (e.g. advertised-but-dead backends)
     int thinking = -1;                // -1 => unset (use global default), 0 => off, 1 => on
     bool drop_thinking_tag = false;   // omit the thinking field entirely (for endpoints that reject it)
     std::string thinking_type = "enabled";  // thinking.type when reasoning is ON ("enabled" DeepSeek, "adaptive" MiniMax)
@@ -46,6 +47,13 @@ struct Profile {
 // so e.g. `-m claude-sonnet-4-6` auto-selects the Anthropic endpoint. The list
 // is a const reference to a function-local static; never written to disk.
 const std::vector<Profile>& builtin_profiles();
+
+// Drop every id in `models` that case-insensitively matches an entry of
+// `blacklist`, preserving order. Used to filter endpoint-advertised models that
+// are reachable in the listing but dead on completion. blacklist empty => copy.
+std::vector<std::string> filter_blacklisted(
+    const std::vector<std::string>& models,
+    const std::vector<std::string>& blacklist);
 
 // Configuration persisted in settings.toml. An empty string / zero means "not
 // set in the file" so callers can layer it under env/flag overrides.
@@ -63,6 +71,10 @@ struct Settings {
     std::string theme;        // code-block syntax theme name; empty => unset
     std::string profile;            // active profile name; empty => none
     std::vector<Profile> profiles;  // [profiles.*] tables, sorted by name
+    // [[allowed_openai_params]] array-of-tables: per-(base_url, model) request
+    // param passthrough allowlists for OpenAI-compatible proxies (see
+    // AllowedOpenAiParams). Empty when unconfigured. Order preserved from file.
+    std::vector<AllowedOpenAiParams> allowed_openai_params;
 };
 
 // Load settings.toml (missing or malformed => default-constructed, never errors).

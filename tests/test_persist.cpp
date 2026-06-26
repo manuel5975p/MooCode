@@ -246,6 +246,32 @@ TEST("persist: settings thinking=off round-trips as 0 (not unset)") {
     CHECK(got.temperature == 0.0);
 }
 
+TEST("persist: allowed_openai_params round-trips per url+model") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.allowed_openai_params = {
+        {"https://ai.skysec.dev/v1", "glm-5.2", {"reasoning_effort"}},
+        {"https://other.example/v1", "m", {"reasoning_effort", "verbosity"}}};
+    save_settings(home, s);
+    Settings got = load_settings(home);
+    CHECK_EQ(got.allowed_openai_params.size(), std::size_t(2));
+    if (got.allowed_openai_params.size() == 2) {
+        const auto& a = got.allowed_openai_params[0];
+        CHECK_EQ(a.base_url, std::string("https://ai.skysec.dev/v1"));
+        CHECK_EQ(a.model, std::string("glm-5.2"));
+        CHECK_EQ(a.params.size(), std::size_t(1));
+        CHECK_EQ(a.params[0], std::string("reasoning_effort"));
+        CHECK_EQ(got.allowed_openai_params[1].params.size(), std::size_t(2));
+    }
+}
+
+TEST("persist: allowed_openai_params absent gives empty list") {
+    test::TempDir td;
+    Settings got = load_settings(td.path().string());
+    CHECK(got.allowed_openai_params.empty());
+}
+
 TEST("settings_rtk_roundtrip") {
     test::TempDir td;
     std::string home = td.path().string();
@@ -323,6 +349,59 @@ TEST("persist: profiles round-trip with the active selector and models") {
         if (got.profiles[1].models.size() == 2)
             CHECK_EQ(got.profiles[1].models[0], std::string("claude-sonnet-4-6"));
     }
+}
+
+TEST("persist: profile blacklist round-trips and is omitted when empty") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.profiles.push_back(Profile{.name = "skysec",
+        .kind = "openai",
+        .base_url = "https://ai.skysec.dev/v1",
+        .model = "glm-4",
+        .models = {"glm-4", "qwen-3"},
+        .blacklist = {"glm-5.2", "broken-model"}});
+    s.profiles.push_back(Profile{.name = "clean",
+        .kind = "openai",
+        .base_url = "https://example.com/v1",
+        .model = "m",
+        .models = {"m"}});  // no blacklist
+    save_settings(home, s);
+
+    // Empty blacklists are not written to the file.
+    std::string body = td.read("settings.toml");
+    CHECK(body.find("glm-5.2") != std::string::npos);
+
+    Settings got = load_settings(home);
+    CHECK_EQ(got.profiles.size(), std::size_t{2});
+    if (got.profiles.size() == 2) {
+        // Sorted by name: "clean" before "skysec".
+        CHECK(got.profiles[0].blacklist.empty());
+        CHECK_EQ(got.profiles[1].name, std::string("skysec"));
+        CHECK_EQ(got.profiles[1].blacklist.size(), std::size_t{2});
+        if (got.profiles[1].blacklist.size() == 2) {
+            CHECK_EQ(got.profiles[1].blacklist[0], std::string("glm-5.2"));
+            CHECK_EQ(got.profiles[1].blacklist[1], std::string("broken-model"));
+        }
+    }
+}
+
+TEST("persist: filter_blacklisted drops matches case-insensitively, keeps order") {
+    std::vector<std::string> models = {"glm-5.2", "glm-4", "qwen-3", "GLM-5.2"};
+    // Empty blacklist => identity (same contents).
+    CHECK_EQ(filter_blacklisted(models, {}).size(), models.size());
+
+    auto kept = filter_blacklisted(models, {"GLM-5.2"});  // case-insensitive
+    CHECK_EQ(kept.size(), std::size_t{2});
+    if (kept.size() == 2) {
+        CHECK_EQ(kept[0], std::string("glm-4"));   // order preserved
+        CHECK_EQ(kept[1], std::string("qwen-3"));
+    }
+
+    // Blacklisting everything yields an empty set, not a crash.
+    CHECK(filter_blacklisted({"a", "b"}, {"a", "b"}).empty());
+    // A blacklist entry that matches nothing is a no-op.
+    CHECK_EQ(filter_blacklisted({"a", "b"}, {"zzz"}).size(), std::size_t{2});
 }
 
 TEST("persist: settings.toml never contains an api_key even with a profile") {

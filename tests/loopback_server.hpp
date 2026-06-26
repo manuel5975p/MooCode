@@ -14,6 +14,8 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace moocode::test {
 
@@ -45,7 +47,19 @@ public:
         status_ = status;
         body_ = std::move(body);
         thread_ = std::thread([this, count, delay] {
-            for (int i = 0; i < count && !stop_; ++i) handle_one(delay);
+            for (int i = 0; i < count && !stop_; ++i) handle_one(status_, body_, delay);
+        });
+    }
+
+    // Serve a fixed sequence of (status, body) replies, one per accepted
+    // connection, in order. Lets a test drive the retry/recovery path, e.g. a
+    // 502 followed by a 200.
+    void serve_each(std::vector<std::pair<int, std::string>> replies,
+                    std::chrono::milliseconds delay = std::chrono::milliseconds{0}) {
+        replies_ = std::move(replies);
+        thread_ = std::thread([this, delay] {
+            for (size_t i = 0; i < replies_.size() && !stop_; ++i)
+                handle_one(replies_[i].first, replies_[i].second, delay);
         });
     }
 
@@ -62,7 +76,8 @@ public:
     std::string last_body() const { return last_body_; }
 
 private:
-    void handle_one(std::chrono::milliseconds delay) {
+    void handle_one(int status, const std::string& body,
+                    std::chrono::milliseconds delay) {
         int c = ::accept(fd_, nullptr, nullptr);
         if (c < 0) return;
         std::string req;
@@ -93,10 +108,10 @@ private:
 
         if (delay.count() > 0) std::this_thread::sleep_for(delay);
 
-        std::string resp = "HTTP/1.1 " + std::to_string(status_) + " X\r\n";
-        resp += "Content-Length: " + std::to_string(body_.size()) + "\r\n";
+        std::string resp = "HTTP/1.1 " + std::to_string(status) + " X\r\n";
+        resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
         resp += "Connection: close\r\n\r\n";
-        resp += body_;
+        resp += body;
         ::send(c, resp.data(), resp.size(), 0);
         ::close(c);
     }
@@ -115,6 +130,7 @@ private:
     int port_ = 0;
     int status_ = 200;
     std::string body_;
+    std::vector<std::pair<int, std::string>> replies_;  // for serve_each
     std::atomic<bool> stop_{false};
     std::thread thread_;
     std::string last_request_;

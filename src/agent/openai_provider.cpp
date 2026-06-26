@@ -5,6 +5,7 @@
 #include "agent/http.hpp"
 #include "agent/json_util.hpp"
 #include "agent/provider_factory.hpp"  // ProviderConnection (for OpenAiConfig ctor)
+#include "agent/retry.hpp"
 #include "agent/stream.hpp"
 #include "agent/strutil.hpp"
 
@@ -51,6 +52,27 @@ nlohmann::json message_json(const Message& m) {
     return j;
 }
 
+// Compare two base URLs ignoring a single trailing slash, since settings.toml
+// may store "…/v1/" while the live connection is normalized to "…/v1".
+bool base_url_equiv(std::string_view a, std::string_view b) {
+    auto trim = [](std::string_view s) {
+        if (!s.empty() && s.back() == '/') s.remove_suffix(1);
+        return s;
+    };
+    return trim(a) == trim(b);
+}
+
+// The params allowlist whose (base_url, model) matches the live config, or
+// empty when none does. Matching is tolerant of a trailing slash on the URL and
+// case-insensitive on the model, mirroring find_model_profile. First match wins.
+const std::vector<std::string>* match_allowed_params(const OpenAiConfig& cfg) {
+    const std::string model = to_lower(cfg.model);
+    for (const AllowedOpenAiParams& e : cfg.allowed_openai_params)
+        if (base_url_equiv(e.base_url, cfg.base_url) && to_lower(e.model) == model)
+            return &e.params;
+    return nullptr;
+}
+
 }  // namespace
 
 nlohmann::json build_chat_request(const OpenAiConfig& cfg, const Conversation& conv,
@@ -65,6 +87,11 @@ nlohmann::json build_chat_request(const OpenAiConfig& cfg, const Conversation& c
         req["reasoning_effort"] = cfg.reasoning_effort;
     if (cfg.thinking)  // DeepSeek/MiniMax convention: thinking:{type:enabled|disabled|adaptive}
         req["thinking"]["type"] = *cfg.thinking ? cfg.thinking_type : "disabled";
+    // Request-param passthrough allowlist for this (base_url, model): proxies
+    // that strip unknown fields (e.g. skysec) forward only those named here.
+    if (const std::vector<std::string>* allow = match_allowed_params(cfg);
+        allow && !allow->empty())
+        req["allowed_openai_params"] = *allow;
     if (stream) {
         req["stream"] = true;
         req["stream_options"]["include_usage"] = true;
@@ -179,7 +206,8 @@ std::expected<Turn, Error> parse_chat_response(const nlohmann::json& body) {
 OpenAiConfig::OpenAiConfig(const ProviderConnection& c)
     : base_url(c.base_url), api_key(c.api_key), model(c.model),
       thinking_type(c.thinking_type.empty() ? "enabled" : c.thinking_type),
-      max_tokens(c.max_tokens) {}
+      max_tokens(c.max_tokens),
+      allowed_openai_params(c.allowed_openai_params) {}
 
 OpenAiProvider::OpenAiProvider(OpenAiConfig cfg) : cfg_(std::move(cfg)) {}
 
@@ -254,30 +282,38 @@ std::expected<Turn, Error> OpenAiProvider::complete(
     std::vector<std::string> headers;
     if (!cfg_.api_key.empty())
         headers.push_back("Authorization: Bearer " + cfg_.api_key);
+    const std::string body = json::dump(req);
 
-    auto resp = http::post_json(url, headers, json::dump(req), cfg_.timeout_secs);
-    if (!resp) return std::unexpected(resp.error());
+    // One blocking round-trip. No partial output to replay, so the whole call is
+    // retried on a transient failure (see with_retry).
+    auto attempt = [&]() -> std::expected<Turn, Error> {
+        auto resp = http::post_json(url, headers, body, cfg_.timeout_secs);
+        if (!resp) return std::unexpected(resp.error());
 
-    auto parsed = json::parse(resp->body);
-    if (!parsed) {
-        // Non-JSON body (e.g. proxy HTML error page): include status + snippet.
-        std::string snippet = resp->body.substr(0, 200);
-        return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
-                                         ": non-JSON response: " + snippet,
-            .code = static_cast<int>(resp->status)});
-    }
-
-    auto turn = json::guard("openai response",
-                            [&] { return parse_chat_response(*parsed); });
-    if (!turn) {
-        // Attach HTTP status for non-2xx so auth/quota errors are unambiguous.
-        if (resp->status < 200 || resp->status >= 300)
+        auto parsed = json::parse(resp->body);
+        if (!parsed) {
+            // Non-JSON body (e.g. proxy HTML error page): include status + snippet.
+            std::string snippet = resp->body.substr(0, 200);
             return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
-                                             ": " + turn.error().msg,
-                .code = static_cast<int>(resp->status)});
-        return std::unexpected(turn.error());
-    }
-    return turn;
+                                             ": non-JSON response: " + snippet,
+                .code = static_cast<int>(resp->status), .kind = ErrorKind::Http});
+        }
+
+        auto turn = json::guard("openai response",
+                                [&] { return parse_chat_response(*parsed); });
+        if (!turn) {
+            // Attach HTTP status for non-2xx so auth/quota errors are unambiguous.
+            if (resp->status < 200 || resp->status >= 300)
+                return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
+                                                 ": " + turn.error().msg,
+                    .code = static_cast<int>(resp->status), .kind = ErrorKind::Http});
+            return std::unexpected(turn.error());
+        }
+        return turn;
+    };
+    const bool no_progress = false;  // a blocking call never emits partial output
+    return with_retry(default_retry_policy(), /*cancel=*/nullptr, no_progress,
+                      attempt);
 }
 
 std::expected<Turn, Error> OpenAiProvider::complete_stream(
@@ -289,45 +325,57 @@ std::expected<Turn, Error> OpenAiProvider::complete_stream(
     std::vector<std::string> headers;
     if (!cfg_.api_key.empty())
         headers.push_back("Authorization: Bearer " + cfg_.api_key);
+    const std::string body = json::dump(req);
 
-    StreamAccumulator acc;
-    std::string buffer;  // SSE line reassembly across network chunks
-    std::string raw;     // whole body, retained only for the error path
-    bool done = false;
+    // `streamed` latches once a real token reaches on_delta: a turn that already
+    // produced visible output must not be retried (that would duplicate it). A
+    // 5xx / connection-reset arrives before any SSE data, so it stays false and
+    // the attempt is retried with backoff. Accumulators are per-attempt so a
+    // retried request starts from a clean slate.
+    bool streamed = false;
+    auto attempt = [&]() -> std::expected<Turn, Error> {
+        StreamAccumulator acc;
+        std::string buffer;  // SSE line reassembly across network chunks
+        std::string raw;     // whole body, retained only for the error path
+        bool done = false;
 
-    auto on_chunk = [&](std::string_view bytes) {
-        raw.append(bytes);
-        buffer.append(bytes);
-        std::vector<std::string> events;
-        parse_sse_chunk(buffer, events, done);
-        for (const auto& ev : events) {
-            auto parsed = json::parse(ev);
-            if (!parsed) continue;  // skip a malformed event, keep streaming
-            StreamAccumulator::Added a = json::guard_or(
-                [&] { return acc.ingest(*parsed); }, StreamAccumulator::Added{});
-            if (on_delta && (!a.answer.empty() || !a.reasoning.empty()))
-                on_delta(a.answer, a.reasoning);
+        auto on_chunk = [&](std::string_view bytes) {
+            raw.append(bytes);
+            buffer.append(bytes);
+            std::vector<std::string> events;
+            parse_sse_chunk(buffer, events, done);
+            for (const auto& ev : events) {
+                auto parsed = json::parse(ev);
+                if (!parsed) continue;  // skip a malformed event, keep streaming
+                StreamAccumulator::Added a = json::guard_or(
+                    [&] { return acc.ingest(*parsed); }, StreamAccumulator::Added{});
+                if (on_delta && (!a.answer.empty() || !a.reasoning.empty())) {
+                    streamed = true;
+                    on_delta(a.answer, a.reasoning);
+                }
+            }
+        };
+
+        auto status = http::post_json_stream(url, headers, body, on_chunk, cancel,
+                                             cfg_.timeout_secs);
+        if (!status) return std::unexpected(status.error());
+
+        // Non-2xx: the server returns a regular JSON error object, not an SSE
+        // stream. Mine the API message out of the buffered body for a clear error.
+        if (*status < 200 || *status >= 300) {
+            std::string detail;
+            if (auto parsed = json::parse(raw); parsed) {
+                auto err = json::guard("openai response",
+                                       [&] { return parse_chat_response(*parsed); });
+                if (!err) detail = err.error().msg;
+            }
+            if (detail.empty()) detail = raw.substr(0, 200);
+            return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " + detail,
+                .code = static_cast<int>(*status), .kind = ErrorKind::Http});
         }
+        return acc.finish();
     };
-
-    auto status = http::post_json_stream(url, headers, json::dump(req), on_chunk,
-                                         cancel, cfg_.timeout_secs);
-    if (!status) return std::unexpected(status.error());
-
-    // Non-2xx: the server returns a regular JSON error object, not an SSE
-    // stream. Mine the API message out of the buffered body for a clear error.
-    if (*status < 200 || *status >= 300) {
-        std::string detail;
-        if (auto parsed = json::parse(raw); parsed) {
-            auto err = json::guard("openai response",
-                                   [&] { return parse_chat_response(*parsed); });
-            if (!err) detail = err.error().msg;
-        }
-        if (detail.empty()) detail = raw.substr(0, 200);
-        return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " + detail,
-            .code = static_cast<int>(*status)});
-    }
-    return acc.finish();
+    return with_retry(default_retry_policy(), cancel, streamed, attempt);
 }
 
 void normalize_base_url(std::string& base_url) {

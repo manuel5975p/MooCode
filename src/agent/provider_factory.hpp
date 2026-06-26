@@ -65,6 +65,10 @@ struct ProviderConnection {
     // "enabled" (DeepSeek convention) by default; "adaptive" for MiniMax, which
     // rejects "enabled". Empty => provider default ("enabled").
     std::string thinking_type;
+    // Per-(base_url, model) request-param passthrough allowlists, carried to the
+    // OpenAI backend (other wire formats ignore them). The backend matches the
+    // live base_url+model at request time, so this survives runtime /model swaps.
+    std::vector<AllowedOpenAiParams> allowed_openai_params;
 };
 
 // Build the concrete Provider for `c.kind`, applying `gp` (set_params) before

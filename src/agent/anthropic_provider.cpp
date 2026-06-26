@@ -9,6 +9,7 @@
 #include "agent/json_util.hpp"
 #include "agent/openai_provider.hpp"  // parse_model_ids
 #include "agent/provider_factory.hpp"  // ProviderConnection (for AnthropicConfig ctor)
+#include "agent/retry.hpp"
 #include "agent/stream.hpp"
 #include "agent/strutil.hpp"
 
@@ -416,28 +417,36 @@ std::expected<Turn, Error> AnthropicProvider::complete(
     const Conversation& conversation, const std::vector<ToolSpec>& tools) {
     nlohmann::json req = build_messages_request(cfg_, conversation, tools);
     std::string url = anthropic_messages_url(cfg_.base_url);
+    const std::vector<std::string> hdrs = headers();
+    const std::string body = json::dump(req);
 
-    auto resp = http::post_json(url, headers(), json::dump(req), cfg_.timeout_secs);
-    if (!resp) return std::unexpected(resp.error());
+    // One blocking round-trip; retried whole on a transient failure (with_retry).
+    auto attempt = [&]() -> std::expected<Turn, Error> {
+        auto resp = http::post_json(url, hdrs, body, cfg_.timeout_secs);
+        if (!resp) return std::unexpected(resp.error());
 
-    auto parsed = json::parse(resp->body);
-    if (!parsed) {
-        std::string snippet = resp->body.substr(0, 200);
-        return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
-                                         ": non-JSON response: " + snippet,
-            .code = static_cast<int>(resp->status)});
-    }
-
-    auto turn = json::guard("anthropic response",
-                            [&] { return parse_messages_response(*parsed); });
-    if (!turn) {
-        if (resp->status < 200 || resp->status >= 300)
+        auto parsed = json::parse(resp->body);
+        if (!parsed) {
+            std::string snippet = resp->body.substr(0, 200);
             return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
-                                             ": " + turn.error().msg,
-                .code = static_cast<int>(resp->status)});
-        return std::unexpected(turn.error());
-    }
-    return turn;
+                                             ": non-JSON response: " + snippet,
+                .code = static_cast<int>(resp->status), .kind = ErrorKind::Http});
+        }
+
+        auto turn = json::guard("anthropic response",
+                                [&] { return parse_messages_response(*parsed); });
+        if (!turn) {
+            if (resp->status < 200 || resp->status >= 300)
+                return std::unexpected(Error{.msg = "HTTP " + std::to_string(resp->status) +
+                                                 ": " + turn.error().msg,
+                    .code = static_cast<int>(resp->status), .kind = ErrorKind::Http});
+            return std::unexpected(turn.error());
+        }
+        return turn;
+    };
+    const bool no_progress = false;
+    return with_retry(default_retry_policy(), /*cancel=*/nullptr, no_progress,
+                      attempt);
 }
 
 std::expected<Turn, Error> AnthropicProvider::complete_stream(
@@ -446,48 +455,58 @@ std::expected<Turn, Error> AnthropicProvider::complete_stream(
     nlohmann::json req =
         build_messages_request(cfg_, conversation, tools, /*stream=*/true);
     std::string url = anthropic_messages_url(cfg_.base_url);
+    const std::vector<std::string> hdrs = headers();
+    const std::string body = json::dump(req);
 
-    AnthropicStreamAccumulator acc;
-    std::string buffer;  // SSE line reassembly across network chunks
-    std::string raw;     // whole body, retained only for the error path
-    bool done = false;
+    // `streamed` latches on the first visible token so an already-streamed turn
+    // is never replayed; accumulators are per-attempt. See the OpenAI backend.
+    bool streamed = false;
+    auto attempt = [&]() -> std::expected<Turn, Error> {
+        AnthropicStreamAccumulator acc;
+        std::string buffer;  // SSE line reassembly across network chunks
+        std::string raw;     // whole body, retained only for the error path
+        bool done = false;
 
-    auto on_chunk = [&](std::string_view bytes) {
-        raw.append(bytes);
-        buffer.append(bytes);
-        std::vector<std::string> events;
-        parse_sse_chunk(buffer, events, done);
-        for (const auto& ev : events) {
-            auto parsed = json::parse(ev);
-            if (!parsed) continue;  // skip a malformed event, keep streaming
-            AnthropicStreamAccumulator::Added a = json::guard_or(
-                [&] { return acc.ingest(*parsed); }, AnthropicStreamAccumulator::Added{});
-            if (on_delta && (!a.answer.empty() || !a.reasoning.empty()))
-                on_delta(a.answer, a.reasoning);
+        auto on_chunk = [&](std::string_view bytes) {
+            raw.append(bytes);
+            buffer.append(bytes);
+            std::vector<std::string> events;
+            parse_sse_chunk(buffer, events, done);
+            for (const auto& ev : events) {
+                auto parsed = json::parse(ev);
+                if (!parsed) continue;  // skip a malformed event, keep streaming
+                AnthropicStreamAccumulator::Added a = json::guard_or(
+                    [&] { return acc.ingest(*parsed); }, AnthropicStreamAccumulator::Added{});
+                if (on_delta && (!a.answer.empty() || !a.reasoning.empty())) {
+                    streamed = true;
+                    on_delta(a.answer, a.reasoning);
+                }
+            }
+        };
+
+        auto status = http::post_json_stream(url, hdrs, body, on_chunk, cancel,
+                                             cfg_.timeout_secs);
+        if (!status) return std::unexpected(status.error());
+
+        // Non-2xx: the server returns a JSON error object, not an SSE stream.
+        if (*status < 200 || *status >= 300) {
+            std::string detail;
+            if (auto parsed = json::parse(raw); parsed) {
+                auto err = json::guard("anthropic response",
+                                       [&] { return parse_messages_response(*parsed); });
+                if (!err) detail = err.error().msg;
+            }
+            if (detail.empty()) detail = raw.substr(0, 200);
+            return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " +
+                                             detail,
+                .code = static_cast<int>(*status), .kind = ErrorKind::Http});
         }
+        // An "error" event can arrive under a 200 status mid-stream.
+        if (acc.error())
+            return std::unexpected(Error{.msg = "anthropic stream error: " + *acc.error(), .code = 0});
+        return acc.finish();
     };
-
-    auto status = http::post_json_stream(url, headers(), json::dump(req),
-                                         on_chunk, cancel, cfg_.timeout_secs);
-    if (!status) return std::unexpected(status.error());
-
-    // Non-2xx: the server returns a JSON error object, not an SSE stream.
-    if (*status < 200 || *status >= 300) {
-        std::string detail;
-        if (auto parsed = json::parse(raw); parsed) {
-            auto err = json::guard("anthropic response",
-                                   [&] { return parse_messages_response(*parsed); });
-            if (!err) detail = err.error().msg;
-        }
-        if (detail.empty()) detail = raw.substr(0, 200);
-        return std::unexpected(Error{.msg = "HTTP " + std::to_string(*status) + ": " +
-                                         detail,
-            .code = static_cast<int>(*status)});
-    }
-    // An "error" event can arrive under a 200 status mid-stream.
-    if (acc.error())
-        return std::unexpected(Error{.msg = "anthropic stream error: " + *acc.error(), .code = 0});
-    return acc.finish();
+    return with_retry(default_retry_policy(), cancel, streamed, attempt);
 }
 
 }  // namespace moocode
