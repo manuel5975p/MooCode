@@ -43,6 +43,10 @@ struct AnthropicConfig {
     // budget, both Messages-API requirements.
     std::string reasoning_effort;    // "low"/"medium"/"high"; "" => use default budget
     std::optional<bool> thinking;    // nullopt => model default (off)
+    // Per-(base_url, model) pairs for which the effort-driven thinking control is
+    // omitted (effort treated as empty). For backends that reject it. Matched
+    // against the live base_url+model at request time.
+    std::vector<ModelEndpoint> drop_reasoning_effort;
 
     AnthropicConfig() = default;
     explicit AnthropicConfig(const struct ProviderConnection& c);

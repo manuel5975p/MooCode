@@ -1496,7 +1496,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             QuestionGate* question_gate_ptr,
             std::shared_ptr<SubagentActivityFn> on_subagent_activity,
             std::shared_ptr<SubagentTextFn> on_subagent_text,
-            SkillRegistry* skills, ToolRegistry* tool_reg) {
+            SkillRegistry* skills, ToolRegistry* tool_reg,
+            std::shared_ptr<std::function<bool(
+                std::string_view, const std::filesystem::path&,
+                const std::string&)>>
+                escape_approver) {
     // Status-bar strings render verbatim every frame; sanitize them once.
     // (api_key/home are never rendered; profile/model may be swapped later but
     // only with values from settings pickers, typed input, or these fields.)
@@ -1680,6 +1684,23 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             return decide(*perms, tc,
                           [&gate](const ToolCall& c) { return gate.request(c); });
         });
+
+        // The "outside root" permission tier: when a filesystem tool resolves a
+        // path that escapes the project root, prompt through the same modal but
+        // under a distinct `<kind>_outside_root` key, so granting escape access
+        // is separate from allowing the tool itself. Runs on the worker thread
+        // (gate.request blocks it until the UI answers), matching on_approve.
+        if (escape_approver) {
+            *escape_approver = [perms, &gate](std::string_view kind,
+                                              const std::filesystem::path& resolved,
+                                              const std::string&) {
+                ToolCall tc;
+                tc.name = std::string(kind) + "_outside_root";
+                tc.arguments_json = resolved.string();
+                return decide(*perms, tc,
+                              [&gate](const ToolCall& c) { return gate.request(c); });
+            };
+        }
     }
 
     // Result of a worker-thread model-detection (list_models) call, handed back
@@ -2136,6 +2157,9 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // a runtime wire-format switch so /model swaps keep the (url,model) gating.
     std::vector<AllowedOpenAiParams> allowed_openai_params =
         load_settings(info.home).allowed_openai_params;
+    // Same for the per-(url,model) reasoning_effort drop list.
+    std::vector<ModelEndpoint> drop_reasoning_effort =
+        load_settings(info.home).drop_reasoning_effort;
 
     // Flat, sorted, de-duplicated model name list for /model autocomplete.
     auto rebuild_model_names = [&] {
@@ -2198,7 +2222,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             // (provider default) and set_params(carry) reapplies the live cap.
             GenerationParams carry = agent.provider().params();
             agent.set_provider(
-                make_provider(ProviderConnection{.kind = k, .base_url = base, .api_key = key, .model = mdl, .max_tokens = 0, .thinking_type = thinking_type, .allowed_openai_params = allowed_openai_params}, carry));
+                make_provider(ProviderConnection{.kind = k, .base_url = base, .api_key = key, .model = mdl, .max_tokens = 0, .thinking_type = thinking_type, .allowed_openai_params = allowed_openai_params, .drop_reasoning_effort = drop_reasoning_effort}, carry));
         }
         info.model = mdl;
         info.base_url = base;
@@ -2645,10 +2669,28 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                  // Load the named skill into the live tool registry. Safe here:
                  // /skill is refused mid-turn (see submit), so no worker thread
                  // is reading the registry concurrently.
-                 if (auto r = skills->load(std::string(arg), *tool_reg); r)
-                     state.push_info("/skill " + std::string(arg) + ": " + *r);
-                 else
+                 const std::string name(arg);
+                 auto r = skills->load(name, *tool_reg);
+                 if (!r) {
                      state.push_error("/skill: " + r.error().msg);
+                     return;
+                 }
+                 // A prompt-injecting skill's result is body text the model must
+                 // see. The /skill listing and tool registry alone don't carry it
+                 // into the conversation, so queue it on the inject buffer: it
+                 // rides the next provider request (flushed by on_inject inside
+                 // agent.run), which also guarantees the system prompt is already
+                 // in place. A tool-registering skill just reports a status note.
+                 if (skills->injects_prompt(name)) {
+                     QueuedPrompt qp;
+                     qp.expanded_prompt = *r;  // full body -> model
+                     qp.original_line = "↳ skill ‘" + name + "’ active";  // -> chat log
+                     pending_queue.push_back(std::move(qp));
+                     state.push_info("/skill " + name +
+                                     " loaded — active on your next message");
+                 } else {
+                     state.push_info("/skill " + name + ": " + *r);
+                 }
              },
              [&]() -> std::vector<std::string> {
                  std::vector<std::string> names;

@@ -54,6 +54,45 @@ std::expected<fs::path, Error> require_directory(fs::path p,
     return std::unexpected(Error{.msg = "not a directory: " + orig, .code = 0});
 }
 
+// Resolve `path` under the confinement root, applying the layered escape policy:
+//   1. static allow_*_outside_root on  -> resolve unconfined, no prompt.
+//   2. path stays inside root          -> return it.
+//   3. path escapes root               -> consult opts.approve_escape (the
+//      interactive "outside root" permission tier). If it (or a prior grant)
+//      permits, return the escaped target; otherwise hard-fail as before.
+// `write` selects the read vs. write static permission and the "read"/"write"
+// approval kind. A genuine resolve failure (bad path, ELOOP) is distinguished
+// from an escape by re-resolving unconfined and surfaced verbatim.
+std::expected<fs::path, Error> resolve_sandboxed(const ToolOptions& opts,
+                                                 const std::string& path,
+                                                 bool write) {
+    const bool static_allow =
+        write ? opts.allow_write_outside_root : opts.allow_read_outside_root;
+    if (static_allow) return resolve_in_root(opts.root, path, /*confine=*/false);
+
+    auto confined = resolve_in_root(opts.root, path, /*confine=*/true);
+    if (confined) return confined;  // inside root: the common case.
+
+    // The confined resolve failed. It is either a true escape or a genuine
+    // resolution error; re-resolve without confinement to tell them apart.
+    auto target = resolve_in_root(opts.root, path, /*confine=*/false);
+    if (!target) return std::unexpected(target.error());  // real error, not escape.
+
+    // Escapes root. Offer the interactive out-of-root permission tier.
+    if (opts.approve_escape &&
+        opts.approve_escape(write ? "write" : "read", *target, path))
+        return target;
+    return std::unexpected(confined.error());  // "path escapes the sandbox root".
+}
+
+// One-line spec-description clause on how the sandbox treats out-of-root paths,
+// so the model's prompt matches the actual policy for this ToolOptions.
+std::string sandbox_note(bool static_allow, bool has_approver) {
+    if (static_allow) return "Absolute paths and paths outside the project root are allowed. ";
+    if (has_approver) return "Paths outside the project root require interactive user approval. ";
+    return "Sandboxed to project root. ";
+}
+
 // --- run_bash helpers -------------------------------------------------------
 
 constexpr size_t kBashOutputCap = kProcOutputCap;  // 1 MiB captured, then truncated
@@ -70,9 +109,11 @@ Result run_command(const std::string& cmd, const fs::path& cwd, int timeout_secs
 Tool read_file_tool(ToolOptions opts) {
     ToolSpec spec{
         "read_file",
-        "Read file contents. `offset` (1-based start line) + `lines` (max "
-        "lines) read that window; omit both for whole file. Sandboxed to "
-        "project root; big reads truncated with marker.",
+        std::string("Read file contents. `offset` (1-based start line) + `lines` (max "
+        "lines) read that window; omit both for whole file. ") +
+            sandbox_note(opts.allow_read_outside_root,
+                         static_cast<bool>(opts.approve_escape)) +
+            "Big reads truncated with marker.",
         json::parse_or(R"({
             "type":"object",
             "properties":{
@@ -83,7 +124,7 @@ Tool read_file_tool(ToolOptions opts) {
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
         return ::moocode::json::arg_string(a, "path").and_then([&](std::string path) -> Result {
-            return resolve_in_root(opts.root, path)
+            return resolve_sandboxed(opts, path, /*write=*/false)
                 .and_then([&](fs::path r) {
                     return require_regular_file(std::move(r), path);
                 })
@@ -120,8 +161,10 @@ Tool read_file_tool(ToolOptions opts) {
 Tool write_file_tool(ToolOptions opts) {
     ToolSpec spec{
         "write_file",
-        "Create or overwrite file with `content`. Sandboxed to project root; "
-        "parent dirs created.",
+        std::string("Create or overwrite file with `content`. ") +
+            sandbox_note(opts.allow_write_outside_root,
+                         static_cast<bool>(opts.approve_escape)) +
+            "Parent dirs created.",
         json::parse_or(R"({
             "type":"object",
             "properties":{
@@ -135,7 +178,7 @@ Tool write_file_tool(ToolOptions opts) {
         auto content = ::moocode::json::arg_string(a, "content");
         if (!content) return std::unexpected(content.error());
 
-        return resolve_in_root(opts.root, *path)
+        return resolve_sandboxed(opts, *path, /*write=*/true)
             .and_then([&](fs::path resolved) -> Result {
                 // Snapshot prior contents for the change callback. The stat is
                 // best-effort: any real I/O failure (perms, EIO) re-surfaces at
@@ -173,8 +216,10 @@ Tool write_file_tool(ToolOptions opts) {
 Tool edit_file_tool(ToolOptions opts) {
     ToolSpec spec{
         "edit_file",
-        "Replace text `old` with `new` in file. `old` must occur exactly "
-        "once, else no change + error. Sandboxed to project root.",
+        std::string("Replace text `old` with `new` in file. `old` must occur exactly "
+        "once, else no change + error. ") +
+            sandbox_note(opts.allow_write_outside_root,
+                         static_cast<bool>(opts.approve_escape)),
         json::parse_or(R"({
             "type":"object",
             "properties":{
@@ -193,7 +238,7 @@ Tool edit_file_tool(ToolOptions opts) {
         if (old_s->empty())
             return std::unexpected(Error{.msg = "`old` must be non-empty", .code = 0});
 
-        return resolve_in_root(opts.root, *path)
+        return resolve_sandboxed(opts, *path, /*write=*/true)
             .and_then(
                 [&](fs::path r) { return require_regular_file(std::move(r), *path); })
             .and_then([&](fs::path resolved) -> Result {
@@ -234,8 +279,9 @@ Tool edit_file_tool(ToolOptions opts) {
 Tool list_dir_tool(ToolOptions opts) {
     ToolSpec spec{
         "list_dir",
-        "List dir entries, sorted, trailing / on subdirs. Sandboxed to "
-        "project root.",
+        std::string("List dir entries, sorted, trailing / on subdirs. ") +
+            sandbox_note(opts.allow_read_outside_root,
+                         static_cast<bool>(opts.approve_escape)),
         json::parse_or(R"({
             "type":"object",
             "properties":{"path":{"type":"string","description":"directory path"}},
@@ -243,7 +289,7 @@ Tool list_dir_tool(ToolOptions opts) {
     return Tool{.spec = std::move(spec),
         .run = [opts](const nlohmann::json& a) -> Result {
         return ::moocode::json::arg_string(a, "path").and_then([&](std::string path) -> Result {
-            return resolve_in_root(opts.root, path)
+            return resolve_sandboxed(opts, path, /*write=*/false)
                 .and_then(
                     [&](fs::path r) { return require_directory(std::move(r), path); })
                 .and_then([&](fs::path resolved) -> Result {

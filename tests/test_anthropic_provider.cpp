@@ -288,6 +288,26 @@ TEST("build_messages_request: effort enables adaptive thinking + output effort")
     CHECK_EQ(req["max_tokens"], 1234);    // no budget bump under adaptive thinking
 }
 
+TEST("build_messages_request: drop_reasoning_effort omits output effort") {
+    AnthropicConfig c = cfg();
+    c.reasoning_effort = "high";
+    c.drop_reasoning_effort = {{"https://api.example/v1", "claude-test"}};
+    auto req = build_messages_request(c, Conversation{Message::user("hi")}, {});
+    // Effort treated as empty: no thinking implied, no output_config.
+    CHECK(!req.contains("thinking"));
+    CHECK(!req.contains("output_config"));
+}
+
+TEST("build_messages_request: drop_reasoning_effort keeps explicit thinking on") {
+    AnthropicConfig c = cfg();
+    c.reasoning_effort = "high";
+    c.thinking = true;  // explicit on survives the drop...
+    c.drop_reasoning_effort = {{"https://api.example/v1", "claude-test"}};
+    auto req = build_messages_request(c, Conversation{Message::user("hi")}, {});
+    CHECK(req.contains("thinking"));
+    CHECK(!req.contains("output_config"));  // ...but the effort value is dropped
+}
+
 TEST("build_messages_request: explicit thinking off omits the block") {
     AnthropicConfig c = cfg();
     c.reasoning_effort = "high";  // would imply on...

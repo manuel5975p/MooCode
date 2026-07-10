@@ -187,8 +187,15 @@ nlohmann::json build_generate_request(const GeminiConfig& cfg,
     if (cfg.max_tokens > 0) gen["maxOutputTokens"] = cfg.max_tokens;
     if (cfg.thinking) {
         if (*cfg.thinking) {
+            // Drop the effort control for backends that reject it (matched per
+            // base_url+model): treat configured effort as empty for the budget.
+            const std::string effort =
+                model_endpoint_matched(cfg.drop_reasoning_effort, cfg.base_url,
+                                       cfg.model)
+                    ? std::string{}
+                    : cfg.reasoning_effort;
             gen["thinkingConfig"] = {
-                {"thinkingBudget", effort_to_thinking_budget(cfg.reasoning_effort)},
+                {"thinkingBudget", effort_to_thinking_budget(effort)},
                 {"includeThoughts", true}};
         } else {
             gen["thinkingConfig"] = {{"thinkingBudget", 0}};
@@ -281,7 +288,7 @@ std::expected<Turn, Error> parse_generate_response(const nlohmann::json& body) {
 
 GeminiConfig::GeminiConfig(const ProviderConnection& c)
     : base_url(c.base_url), api_key(c.api_key), model(c.model),
-      max_tokens(c.max_tokens) {}
+      max_tokens(c.max_tokens), drop_reasoning_effort(c.drop_reasoning_effort) {}
 
 GeminiProvider::GeminiProvider(GeminiConfig cfg) : cfg_(std::move(cfg)) {}
 

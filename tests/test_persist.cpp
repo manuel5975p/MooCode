@@ -234,6 +234,26 @@ TEST("persist: settings round-trip") {
     CHECK_EQ(got.theme, std::string("vivid"));
 }
 
+TEST("persist: sandbox-escape permissions round-trip independently") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.allow_read_outside_root = 1;   // on
+    s.allow_write_outside_root = 0;  // explicit off
+    save_settings(home, s);
+    Settings got = load_settings(home);
+    CHECK_EQ(got.allow_read_outside_root, 1);
+    CHECK_EQ(got.allow_write_outside_root, 0);
+}
+
+TEST("persist: sandbox-escape permissions stay unset by default") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings got = load_settings(home);  // nothing saved
+    CHECK_EQ(got.allow_read_outside_root, -1);
+    CHECK_EQ(got.allow_write_outside_root, -1);
+}
+
 TEST("persist: settings thinking=off round-trips as 0 (not unset)") {
     test::TempDir td;
     std::string home = td.path().string();
@@ -270,6 +290,35 @@ TEST("persist: allowed_openai_params absent gives empty list") {
     test::TempDir td;
     Settings got = load_settings(td.path().string());
     CHECK(got.allowed_openai_params.empty());
+}
+
+TEST("persist: drop_reasoning_effort round-trips per url+model") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.drop_reasoning_effort = {
+        {"https://ai.skysec.dev/v1", "glm-5.2"},
+        {"https://other.example/v1", "m"}};
+    save_settings(home, s);
+    Settings got = load_settings(home);
+    CHECK_EQ(got.drop_reasoning_effort.size(), std::size_t(2));
+    if (got.drop_reasoning_effort.size() == 2) {
+        CHECK_EQ(got.drop_reasoning_effort[0].base_url,
+                 std::string("https://ai.skysec.dev/v1"));
+        CHECK_EQ(got.drop_reasoning_effort[0].model, std::string("glm-5.2"));
+        CHECK_EQ(got.drop_reasoning_effort[1].model, std::string("m"));
+    }
+    // The live matcher agrees with what was persisted.
+    CHECK(model_endpoint_matched(got.drop_reasoning_effort,
+                                 "https://ai.skysec.dev/v1/", "GLM-5.2"));
+    CHECK(!model_endpoint_matched(got.drop_reasoning_effort,
+                                  "https://ai.skysec.dev/v1", "other"));
+}
+
+TEST("persist: drop_reasoning_effort absent gives empty list") {
+    test::TempDir td;
+    Settings got = load_settings(td.path().string());
+    CHECK(got.drop_reasoning_effort.empty());
 }
 
 TEST("settings_rtk_roundtrip") {

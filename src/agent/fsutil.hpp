@@ -15,17 +15,25 @@
 
 namespace moocode {
 
-// Resolve `rel` under `root` and reject any path that escapes the sandbox.
+// Resolve `rel` under `root`, optionally rejecting any path that escapes the
+// sandbox. When `confine` is false the path is still normalized (so callers get
+// a canonical absolute path) but escapes are permitted — this is how the
+// separately-grantable read/write-outside-root permissions relax confinement.
+// An absolute `rel` replaces `root` per the usual `operator/` semantics.
 // pre: root names an existing/absolute-resolvable directory.
-// post: on success the returned path is `root` or strictly within it.
+// post: on success the returned path is canonical; when `confine`, it is `root`
+//       or strictly within it.
 inline std::expected<std::filesystem::path, Error> resolve_in_root(
-    const std::filesystem::path& root, const std::string& rel) {
+    const std::filesystem::path& root, const std::string& rel,
+    bool confine = true) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::path base = fs::weakly_canonical(fs::absolute(root, ec), ec);
     if (ec) return std::unexpected(Error{.msg = "cannot resolve sandbox root", .code = 0});
     fs::path target = fs::weakly_canonical(base / rel, ec);
     if (ec) return std::unexpected(Error{.msg = "cannot resolve path: " + rel, .code = 0});
+
+    if (!confine) return target;
 
     const std::string b = base.string();
     const std::string t = target.string();

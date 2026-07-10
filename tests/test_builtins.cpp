@@ -134,11 +134,152 @@ TEST("read_file: path escaping the root is rejected") {
     CHECK(!r.has_value());
 }
 
+TEST("read_file: absolute path outside root rejected when read not allowed") {
+    test::TempDir root, outside;
+    outside.write("secret.txt", "classified");
+    auto abs = (outside.path() / "secret.txt").string();
+    auto t = read_file_tool(opts_for(root));
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(!r.has_value());
+}
+
+TEST("read_file: outside-root read permitted when allow_read_outside_root set") {
+    test::TempDir root, outside;
+    outside.write("secret.txt", "classified");
+    auto abs = (outside.path() / "secret.txt").string();
+    auto o = opts_for(root);
+    o.allow_read_outside_root = true;
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(r.has_value());
+    if (r) CHECK(r->find("classified") != std::string::npos);
+}
+
+TEST("read_file: read permission does not grant write escape") {
+    test::TempDir root, outside;
+    auto abs = (outside.path() / "new.txt").string();
+    auto o = opts_for(root);
+    o.allow_read_outside_root = true;  // read only
+    auto t = write_file_tool(o);
+    auto r = t.run(args({{"path", abs}, {"content", "x"}}));
+    CHECK(!r.has_value());
+}
+
 TEST("read_file: missing path argument returns Error") {
     test::TempDir d;
     auto t = read_file_tool(opts_for(d));
     auto r = t.run(nlohmann::json::object());
     CHECK(!r.has_value());
+}
+
+// --- outside-root approval tier (approve_escape) ----------------------------
+
+TEST("read_file: escape approver granting access permits an outside read") {
+    test::TempDir root, outside;
+    outside.write("secret.txt", "classified");
+    auto abs = (outside.path() / "secret.txt").string();
+    auto o = opts_for(root);
+    std::string seen_kind;
+    o.approve_escape = [&](std::string_view kind, const std::filesystem::path&,
+                           const std::string&) {
+        seen_kind = std::string(kind);
+        return true;  // grant
+    };
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(r.has_value());
+    if (r) CHECK(r->find("classified") != std::string::npos);
+    CHECK(seen_kind == "read");  // routed as a read escape
+}
+
+TEST("read_file: escape approver denying access rejects an outside read") {
+    test::TempDir root, outside;
+    outside.write("secret.txt", "classified");
+    auto abs = (outside.path() / "secret.txt").string();
+    auto o = opts_for(root);
+    bool asked = false;
+    o.approve_escape = [&](std::string_view, const std::filesystem::path&,
+                           const std::string&) {
+        asked = true;
+        return false;  // deny
+    };
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(!r.has_value());
+    CHECK(asked);  // the tier was consulted before failing
+}
+
+TEST("read_file: in-root path never consults the escape approver") {
+    test::TempDir root;
+    root.write("inside.txt", "hello");
+    auto o = opts_for(root);
+    bool asked = false;
+    o.approve_escape = [&](std::string_view, const std::filesystem::path&,
+                           const std::string&) {
+        asked = true;
+        return true;
+    };
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", "inside.txt"}}));
+    CHECK(r.has_value());
+    CHECK(!asked);  // no prompt for confined paths
+}
+
+TEST("read_file: missing outside file still fails after the approver grants") {
+    test::TempDir root, outside;
+    auto abs = (outside.path() / "nope.txt").string();  // does not exist
+    auto o = opts_for(root);
+    o.approve_escape = [&](std::string_view, const std::filesystem::path&,
+                           const std::string&) { return true; };
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(!r.has_value());  // approval unlocks the sandbox, not the missing file
+}
+
+TEST("read_file: static allow short-circuits the approver") {
+    test::TempDir root, outside;
+    outside.write("s.txt", "data");
+    auto abs = (outside.path() / "s.txt").string();
+    auto o = opts_for(root);
+    o.allow_read_outside_root = true;
+    bool asked = false;
+    o.approve_escape = [&](std::string_view, const std::filesystem::path&,
+                           const std::string&) {
+        asked = true;
+        return true;
+    };
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(r.has_value());
+    CHECK(!asked);  // pre-granted permission needs no prompt
+}
+
+TEST("write_file: escape approver granting access permits an outside write") {
+    test::TempDir root, outside;
+    auto abs = (outside.path() / "made.txt").string();
+    auto o = opts_for(root);
+    std::string seen_kind;
+    o.approve_escape = [&](std::string_view kind, const std::filesystem::path&,
+                           const std::string&) {
+        seen_kind = std::string(kind);
+        return true;
+    };
+    auto t = write_file_tool(o);
+    auto r = t.run(args({{"path", abs}, {"content", "hi"}}));
+    CHECK(r.has_value());
+    CHECK(seen_kind == "write");  // routed as a write escape
+}
+
+TEST("write_file: escape approver denying access rejects an outside write") {
+    test::TempDir root, outside;
+    auto abs = (outside.path() / "made.txt").string();
+    auto o = opts_for(root);
+    o.approve_escape = [&](std::string_view, const std::filesystem::path&,
+                           const std::string&) { return false; };
+    auto t = write_file_tool(o);
+    auto r = t.run(args({{"path", abs}, {"content", "hi"}}));
+    CHECK(!r.has_value());
+    CHECK(!std::filesystem::exists(abs));  // nothing written on denial
 }
 
 // --- write_file -------------------------------------------------------------
@@ -176,6 +317,28 @@ TEST("write_file: path escaping the root is rejected") {
     CHECK(!r.has_value());
 }
 
+TEST("write_file: outside-root write permitted when allow_write_outside_root set") {
+    test::TempDir root, outside;
+    auto abs = (outside.path() / "made.txt").string();
+    auto o = opts_for(root);
+    o.allow_write_outside_root = true;
+    auto t = write_file_tool(o);
+    auto r = t.run(args({{"path", abs}, {"content", "payload"}}));
+    CHECK(r.has_value());
+    CHECK_EQ(outside.read("made.txt"), std::string("payload"));
+}
+
+TEST("write_file: write permission does not grant read escape") {
+    test::TempDir root, outside;
+    outside.write("secret.txt", "classified");
+    auto abs = (outside.path() / "secret.txt").string();
+    auto o = opts_for(root);
+    o.allow_write_outside_root = true;  // write only
+    auto t = read_file_tool(o);
+    auto r = t.run(args({{"path", abs}}));
+    CHECK(!r.has_value());
+}
+
 // --- edit_file --------------------------------------------------------------
 
 TEST("edit_file: replaces a unique occurrence") {
@@ -185,6 +348,21 @@ TEST("edit_file: replaces a unique occurrence") {
     auto r = t.run(args({{"path", "c.txt"}, {"old", "beta"}, {"new", "BETA"}}));
     CHECK(r.has_value());
     CHECK_EQ(d.read("c.txt"), std::string("alpha BETA gamma"));
+}
+
+TEST("edit_file: outside-root edit follows allow_write_outside_root") {
+    test::TempDir root, outside;
+    outside.write("c.txt", "alpha beta gamma");
+    auto abs = (outside.path() / "c.txt").string();
+    auto o = opts_for(root);
+    auto denied = edit_file_tool(o).run(
+        args({{"path", abs}, {"old", "beta"}, {"new", "BETA"}}));
+    CHECK(!denied.has_value());
+    o.allow_write_outside_root = true;
+    auto allowed = edit_file_tool(o).run(
+        args({{"path", abs}, {"old", "beta"}, {"new", "BETA"}}));
+    CHECK(allowed.has_value());
+    CHECK_EQ(outside.read("c.txt"), std::string("alpha BETA gamma"));
 }
 
 TEST("edit_file: absent old string fails loudly") {
@@ -269,6 +447,19 @@ TEST("list_dir: path escaping the root is rejected") {
     auto t = list_dir_tool(opts_for(d));
     auto r = t.run(args({{"path", "../.."}}));
     CHECK(!r.has_value());
+}
+
+TEST("list_dir: outside-root listing follows allow_read_outside_root") {
+    test::TempDir root, outside;
+    outside.write("file.txt", "x");
+    auto abs = outside.path().string();
+    auto o = opts_for(root);
+    auto denied = list_dir_tool(o).run(args({{"path", abs}}));
+    CHECK(!denied.has_value());
+    o.allow_read_outside_root = true;
+    auto allowed = list_dir_tool(o).run(args({{"path", abs}}));
+    CHECK(allowed.has_value());
+    if (allowed) CHECK(allowed->find("file.txt") != std::string::npos);
 }
 
 // --- run_bash ---------------------------------------------------------------

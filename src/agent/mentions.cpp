@@ -533,11 +533,13 @@ void process_token(const std::string& token, const MentionOptions& opt,
                    std::vector<MentionEntry>& out, std::size_t& total_bytes,
                    std::vector<ImageBlock>& images) {
     if (!looks_like_path(token)) return;  // silently drop emails etc.
-    auto resolved = resolve_in_root(opt.root, token);
+    // Unconfined: an @-mention is an explicit user grant, so it may point
+    // anywhere. `root` only supplies the base for relative paths.
+    auto resolved = resolve_in_root(opt.root, token, /*confine=*/false);
     if (!resolved) {
         MentionEntry e;
         e.path = token;
-        e.error = "path escapes the sandbox root: " + token;
+        e.error = "cannot resolve path: " + token;
         out.push_back(std::move(e));
         return;
     }

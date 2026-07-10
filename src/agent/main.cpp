@@ -97,7 +97,7 @@ bool program_on_path(std::string_view prog) {
 // {DIR}/{FILES}/{TIME}/{SYSINFO} fold in live working-directory context. See
 // expand_system_prompt(). A --system override is expanded the same way.
 constexpr const char* kDefaultSystemPrompt =
-    "You are Moo the coding agent. No pleasantries, no hedging. Exact code,\n"
+    "You are Moo the coding agent. You speak terse. No pleasantries, no hedging. Exact code,\n"
     "errors, terms.\n"
     "\n"
     "Tools:\n"
@@ -134,7 +134,7 @@ constexpr const char* kDefaultSystemPrompt =
     "sensible default, state it, proceed. Design/plan tasks -> ask up front.\n"
     "\n"
     "Final report (the tool-free message): what changed, what you verified and\n"
-    "how, what remains or is known broken. Terse.";
+    "how, what remains or is known broken. Terse concise. e.g. \"X now Y, no longer Z\", \"fix B by check in f\".";
 
 // Capture a command's stdout via popen, trimmed of trailing newlines.
 // Best-effort: empty string on failure. pre: cmd nonnull.
@@ -273,6 +273,10 @@ po::parser make_parser() {
     p["no-thinking"].description("Force extended thinking / reasoning OFF");
     p["rtk"].description("Force rtk output-compaction ON (rewrite simple bash commands to `rtk <cmd>`)");
     p["no-rtk"].description("Force rtk output-compaction OFF");
+    p["allow-read-outside-root"].description(
+        "Let read_file/list_dir resolve paths outside the project root");
+    p["allow-write-outside-root"].description(
+        "Let write_file/edit_file resolve paths outside the project root");
     p["context-window"].abbreviation('c').type(po::i32).fallback(0).description(
         "Context window size for the TUI token gauge (0 = show count only)");
     p["debug"].description(
@@ -654,6 +658,36 @@ int main(int argc, char** argv) {
     const bool rtk_on = (rtk_cfg != 0);  // default-on when unset (-1)
     opts.rtk = rtk_available && rtk_on;
 
+    // Sandbox-escape permissions: independent flag > env > settings > default-off.
+    // Default off keeps the agent confined to the project root unless relaxed.
+    auto resolve_perm = [](int setting, const char* env, bool flag_set) {
+        int cfg = setting;  // -1 unset / 0 off / 1 on
+        if (const char* e = std::getenv(env); e && *e)
+            cfg = (std::string_view(e) == "0" || std::string_view(e) == "false") ? 0 : 1;
+        if (flag_set) cfg = 1;
+        return cfg == 1;  // unset (-1) => off
+    };
+    opts.allow_read_outside_root =
+        resolve_perm(settings.allow_read_outside_root, "MOOCODE_ALLOW_READ_OUTSIDE_ROOT",
+                     cli["allow-read-outside-root"].was_set());
+    opts.allow_write_outside_root =
+        resolve_perm(settings.allow_write_outside_root, "MOOCODE_ALLOW_WRITE_OUTSIDE_ROOT",
+                     cli["allow-write-outside-root"].was_set());
+
+    // Interactive "outside root" permission tier. The tool closures are built
+    // now (register_builtin_tools, below) but the real prompt only exists once a
+    // run mode is chosen (TUI gate / tty), so route through a shared, late-bound
+    // hook: the tools call opts.approve_escape, which forwards to *escape_hook if
+    // the run mode installed one. Empty hook => escapes stay denied.
+    using EscapeHook = std::function<bool(
+        std::string_view, const std::filesystem::path&, const std::string&)>;
+    auto escape_hook = std::make_shared<EscapeHook>();
+    opts.approve_escape = [escape_hook](std::string_view kind,
+                                        const std::filesystem::path& resolved,
+                                        const std::string& requested) {
+        return *escape_hook && (*escape_hook)(kind, resolved, requested);
+    };
+
     ToolRegistry reg;
     // Optional, on-demand capabilities. Skills are registered (but not loaded)
     // below; the model loads one via load_skill, the user via /skill. Must
@@ -786,7 +820,7 @@ int main(int argc, char** argv) {
     // truth with the TUI's runtime provider swaps). Both satisfy Provider&, so
     // the agent loop is identical; only the request/response shape differs.
     std::unique_ptr<Provider> provider = make_provider(
-        ProviderConnection{.kind = kind, .base_url = base_url, .api_key = api_key, .model = model, .max_tokens = max_tokens, .thinking_type = conn_thinking_type, .allowed_openai_params = settings.allowed_openai_params}, gp);
+        ProviderConnection{.kind = kind, .base_url = base_url, .api_key = api_key, .model = model, .max_tokens = max_tokens, .thinking_type = conn_thinking_type, .allowed_openai_params = settings.allowed_openai_params, .drop_reasoning_effort = settings.drop_reasoning_effort}, gp);
 
     // Soft warning: reasoning controls were requested on an OpenAI-compatible
     // model that probably ignores reasoning_effort/thinking. (Anthropic always
@@ -851,7 +885,8 @@ int main(int argc, char** argv) {
         // stored per-profile credential is missing or empty.
         scfg.make_provider_for_model =
             [sub_profiles, sub_creds, key = api_key,
-             sub_allowed = settings.allowed_openai_params](const std::string& model)
+             sub_allowed = settings.allowed_openai_params,
+             sub_drop = settings.drop_reasoning_effort](const std::string& model)
             -> std::expected<std::unique_ptr<Provider>, Error> {
             const Profile* p = find_model_profile(model, sub_profiles);
             if (!p)
@@ -869,7 +904,8 @@ int main(int argc, char** argv) {
                                     .model = model,
                                     .max_tokens = 0,
                                     .thinking_type = p->thinking_type,
-                                    .allowed_openai_params = sub_allowed};
+                                    .allowed_openai_params = sub_allowed,
+                                    .drop_reasoning_effort = sub_drop};
             return make_provider(conn, GenerationParams{});
         };
         // The unrestricted tool is always advertised. The restricted variant is
@@ -889,6 +925,20 @@ int main(int argc, char** argv) {
                     "loaded — spawn_subagent_restricted is now available");
             }});
     }
+
+    // User-authored Markdown skills from ~/.moo/skills/<name>.md. Each file's
+    // heading+first-paragraph is a terse description (kept out of the system
+    // prompt) and its body is the prompt injected when the skill is loaded. A
+    // file whose frontmatter sets `effect: system` instead appends its body to
+    // the live system prompt — routed through this sink. Registered after the
+    // built-in skills so a user file can override one by name (last registration
+    // wins). --no-env suppresses them, mirroring MOO.md.
+    auto system_prompt_sink = [&agent](std::string body) {
+        agent.append_system_prompt(std::move(body));
+    };
+    if (!cli["no-env"].was_set() && !home.empty())
+        load_markdown_skills(skills, std::filesystem::path(home) / "skills",
+                             system_prompt_sink);
 
     // The load_skill tool is always advertised so the model can pull in optional
     // skills mid-run. Its description snapshots the skills registered above, so
@@ -923,6 +973,9 @@ int main(int argc, char** argv) {
     mopt.max_file_bytes = 64 * 1024;
     mopt.max_total_bytes = 256 * 1024;
     mopt.max_files = 32;
+    // @-mentions are never sandbox-confined (see MentionOptions): the user typed
+    // the path, so it carries their own authority regardless of the read-escape
+    // permission the model's tools are held to.
 
     // Interactive on a terminal: the full-screen TUI. It installs its own
     // streaming callbacks and, unless --yes, a four-way modal approval gate, and
@@ -938,8 +991,14 @@ int main(int argc, char** argv) {
                      api_key,
                      active_profile};
         info.debug = cli["debug"].was_set();
+        // --yes bypasses the modal gate (perms=nullptr), so it also bypasses the
+        // escape prompt: allow out-of-root access outright. Otherwise run_tui
+        // installs the gate-backed hook itself.
+        if (yes)
+            *escape_hook = [](std::string_view, const std::filesystem::path&,
+                              const std::string&) { return true; };
         int code = run_tui(agent, yes ? nullptr : &perms, info, sink, &question_gate,
-                         on_sub_activity, on_sub_text, &skills, &reg);
+                         on_sub_activity, on_sub_text, &skills, &reg, escape_hook);
         http::global_cleanup();
         return code;
     }
@@ -957,6 +1016,20 @@ int main(int argc, char** argv) {
                 if (tc.name == "ask_user") return true;
                 return decide(perms, tc, tty_approve);
             });
+    // Out-of-root accesses prompt over /dev/tty under a distinct
+    // `<kind>_outside_root` key; --yes allows them without asking.
+    if (yes)
+        *escape_hook = [](std::string_view, const std::filesystem::path&,
+                          const std::string&) { return true; };
+    else
+        *escape_hook = [&perms](std::string_view kind,
+                                const std::filesystem::path& resolved,
+                                const std::string&) {
+            ToolCall tc;
+            tc.name = std::string(kind) + "_outside_root";
+            tc.arguments_json = resolved.string();
+            return decide(perms, tc, tty_approve);
+        };
 
     // Live output: the answer streams to stdout as tokens arrive. The reasoning
     // (chain of thought) is NOT printed verbatim — it can be enormous and the

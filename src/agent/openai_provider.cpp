@@ -83,7 +83,8 @@ nlohmann::json build_chat_request(const OpenAiConfig& cfg, const Conversation& c
     if (cfg.max_tokens > 0) req["max_tokens"] = cfg.max_tokens;
     // Optional reasoning controls — emitted only when explicitly configured so
     // strict OpenAI-compatible servers that reject unknown fields stay happy.
-    if (!cfg.reasoning_effort.empty())
+    if (!cfg.reasoning_effort.empty() &&
+        !model_endpoint_matched(cfg.drop_reasoning_effort, cfg.base_url, cfg.model))
         req["reasoning_effort"] = cfg.reasoning_effort;
     if (cfg.thinking)  // DeepSeek/MiniMax convention: thinking:{type:enabled|disabled|adaptive}
         req["thinking"]["type"] = *cfg.thinking ? cfg.thinking_type : "disabled";
@@ -207,7 +208,8 @@ OpenAiConfig::OpenAiConfig(const ProviderConnection& c)
     : base_url(c.base_url), api_key(c.api_key), model(c.model),
       thinking_type(c.thinking_type.empty() ? "enabled" : c.thinking_type),
       max_tokens(c.max_tokens),
-      allowed_openai_params(c.allowed_openai_params) {}
+      allowed_openai_params(c.allowed_openai_params),
+      drop_reasoning_effort(c.drop_reasoning_effort) {}
 
 OpenAiProvider::OpenAiProvider(OpenAiConfig cfg) : cfg_(std::move(cfg)) {}
 

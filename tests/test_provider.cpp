@@ -190,6 +190,52 @@ TEST("build_chat_request: empty params list emits nothing even on match") {
     CHECK(!req.contains("allowed_openai_params"));
 }
 
+// --- drop_reasoning_effort --------------------------------------------------
+
+TEST("build_chat_request: reasoning_effort emitted when not in drop list") {
+    auto cc = cfg();
+    cc.reasoning_effort = "high";
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK_EQ(req["reasoning_effort"], std::string("high"));
+}
+
+TEST("build_chat_request: reasoning_effort dropped on matching url+model") {
+    auto cc = cfg();
+    cc.reasoning_effort = "high";
+    cc.drop_reasoning_effort = {{"https://api.example/v1", "test-model"}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(!req.contains("reasoning_effort"));
+}
+
+TEST("build_chat_request: drop_reasoning_effort tolerates trailing slash") {
+    auto cc = cfg();  // base_url ends in "/v1" (no slash)
+    cc.reasoning_effort = "high";
+    cc.drop_reasoning_effort = {{"https://api.example/v1/", "test-model"}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(!req.contains("reasoning_effort"));
+}
+
+TEST("build_chat_request: drop_reasoning_effort model match is case-insensitive") {
+    auto cc = cfg();  // model "test-model"
+    cc.reasoning_effort = "high";
+    cc.drop_reasoning_effort = {{"https://api.example/v1", "TEST-MODEL"}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK(!req.contains("reasoning_effort"));
+}
+
+TEST("build_chat_request: drop_reasoning_effort skipped on model mismatch") {
+    auto cc = cfg();
+    cc.reasoning_effort = "high";
+    cc.drop_reasoning_effort = {{"https://api.example/v1", "other-model"}};
+    Conversation c{Message::user("hi")};
+    auto req = build_chat_request(cc, c, {});
+    CHECK_EQ(req["reasoning_effort"], std::string("high"));
+}
+
 // --- parse_chat_response ----------------------------------------------------
 
 TEST("parse_chat_response: text-only answer") {

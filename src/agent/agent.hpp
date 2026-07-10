@@ -98,6 +98,16 @@ public:
 
     const std::string& system_prompt() const { return config_.system_prompt; }
 
+    // Append `extra` to the system prompt for the rest of the session. Updates
+    // the future-turn source (config_.system_prompt) and, when run() has already
+    // materialized the prompt as the conversation's leading system message, that
+    // message too — so the augmentation reaches the very next request. A blank
+    // line separates it from existing content. A SystemPrompt-effect skill
+    // routes its body here. No-op on empty `extra`. Note: mutating the system
+    // prompt mid-session invalidates any provider-side prompt cache once.
+    // pre: no run() in progress (mutates the conversation).
+    void append_system_prompt(std::string extra);
+
     // Cancel the current run() mid-flight. The in-flight HTTP request is aborted
     // and run() returns an Error. No-op when no run is in progress. Thread-safe.
     void cancel();

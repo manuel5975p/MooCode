@@ -181,12 +181,17 @@ nlohmann::json build_messages_request(const AnthropicConfig& cfg,
     // thinking — the fixed {type:"enabled", budget_tokens} shape and any
     // sampling param are hard 400s. Depth is steered via output_config.effort;
     // request a summarized reasoning stream so the TUI has thinking text to show.
-    const bool thinking_on =
-        cfg.thinking.value_or(!cfg.reasoning_effort.empty());
+    // Drop the effort control for backends that reject it (matched per
+    // base_url+model): treat the configured effort as empty for this request.
+    const std::string effort =
+        model_endpoint_matched(cfg.drop_reasoning_effort, cfg.base_url, cfg.model)
+            ? std::string{}
+            : cfg.reasoning_effort;
+    const bool thinking_on = cfg.thinking.value_or(!effort.empty());
     if (thinking_on) {
         req["thinking"] = {{"type", "adaptive"}, {"display", "summarized"}};
         req.erase("temperature");  // rejected alongside thinking
-        if (const std::string e = effort_to_output_effort(cfg.reasoning_effort);
+        if (const std::string e = effort_to_output_effort(effort);
             !e.empty())
             req["output_config"] = {{"effort", e}};
     }
@@ -348,7 +353,7 @@ std::expected<Turn, Error> parse_messages_response(const nlohmann::json& body) {
 
 AnthropicConfig::AnthropicConfig(const ProviderConnection& c)
     : base_url(c.base_url), api_key(c.api_key), model(c.model),
-      max_tokens(c.max_tokens) {}
+      max_tokens(c.max_tokens), drop_reasoning_effort(c.drop_reasoning_effort) {}
 
 AnthropicProvider::AnthropicProvider(AnthropicConfig cfg) : cfg_(std::move(cfg)) {}
 

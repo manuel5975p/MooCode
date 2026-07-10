@@ -147,6 +147,24 @@ void Agent::append(Message m) {
     if (on_message_) on_message_(conv_.back());
 }
 
+void Agent::append_system_prompt(std::string extra) {
+    if (extra.empty()) return;
+    if (config_.system_prompt.empty())
+        config_.system_prompt = std::move(extra);
+    else
+        config_.system_prompt += "\n\n" + std::move(extra);
+
+    // run() materializes config_.system_prompt as conv_[0] on the first turn;
+    // once that has happened, mutating config_ alone never reaches the wire, so
+    // keep the live leading system message in sync. Before the first turn the
+    // conversation is empty and run() will prepend the updated config_.
+    if (conv_.empty()) return;
+    if (conv_.front().role() == Role::System)
+        conv_.front() = Message::system(config_.system_prompt);
+    else
+        conv_.insert(conv_.begin(), Message::system(config_.system_prompt));
+}
+
 std::expected<std::string, Error> Agent::run(std::string user_prompt,
                                                std::vector<ContentPart> user_parts) {
     // Reset the cancellation flag so a cancellation from an earlier run does

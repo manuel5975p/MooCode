@@ -131,6 +131,89 @@ TEST("run: no system message when system_prompt empty") {
     if (!h.empty()) CHECK(h[0].role() == Role::User);
 }
 
+TEST("append_system_prompt: before the first turn it joins the prepended message") {
+    FakeProvider p;
+    p.script.push_back(Turn{.text = "ok", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+    ToolRegistry reg;
+    AgentConfig cfg;
+    cfg.system_prompt = "base";
+    Agent agent(p, reg, cfg);
+
+    agent.append_system_prompt("extra rule");
+    CHECK_EQ(agent.system_prompt(), std::string("base\n\nextra rule"));
+
+    CHECK(agent.run("hi").has_value());
+    const auto& h = agent.history();
+    CHECK(!h.empty());
+    if (!h.empty()) {
+        CHECK(h[0].role() == Role::System);
+        CHECK_EQ(h[0].content(), std::string("base\n\nextra rule"));
+    }
+}
+
+TEST("append_system_prompt: mid-session it updates the live system message") {
+    FakeProvider p;
+    p.script.push_back(Turn{.text = "a", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+    p.script.push_back(Turn{.text = "b", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+    ToolRegistry reg;
+    AgentConfig cfg;
+    cfg.system_prompt = "base";
+    Agent agent(p, reg, cfg);
+
+    CHECK(agent.run("one").has_value());
+    agent.append_system_prompt("loaded skill body");
+    CHECK(agent.run("two").has_value());
+
+    const auto& h = agent.history();
+    CHECK(!h.empty());
+    if (!h.empty()) {
+        CHECK(h[0].role() == Role::System);
+        CHECK_EQ(h[0].content(), std::string("base\n\nloaded skill body"));
+    }
+    // The provider must have seen the augmented prompt on the second request.
+    CHECK(p.seen.size() >= 2);
+    if (p.seen.size() >= 2) {
+        const auto& last = p.seen.back();
+        CHECK(!last.empty());
+        if (!last.empty()) {
+            CHECK(last[0].role() == Role::System);
+            CHECK(last[0].content().find("loaded skill body") != std::string::npos);
+        }
+    }
+}
+
+TEST("append_system_prompt: inserts a system message when none existed") {
+    FakeProvider p;
+    p.script.push_back(Turn{.text = "a", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+    p.script.push_back(Turn{.text = "b", .tool_calls = {}, .finish_reason = "stop", .usage = {}, .reasoning = {}});
+    ToolRegistry reg;
+    Agent agent(p, reg, AgentConfig{});  // empty system prompt
+
+    CHECK(agent.run("one").has_value());
+    CHECK(!agent.history().empty());
+    if (!agent.history().empty())
+        CHECK(agent.history()[0].role() == Role::User);  // no system yet
+
+    agent.append_system_prompt("new system");
+    CHECK(!agent.history().empty());
+    if (!agent.history().empty()) {
+        CHECK(agent.history()[0].role() == Role::System);
+        CHECK_EQ(agent.history()[0].content(), std::string("new system"));
+    }
+    CHECK(agent.run("two").has_value());
+    CHECK(p.seen.back()[0].role() == Role::System);
+}
+
+TEST("append_system_prompt: empty extra is a no-op") {
+    FakeProvider p;
+    ToolRegistry reg;
+    AgentConfig cfg;
+    cfg.system_prompt = "base";
+    Agent agent(p, reg, cfg);
+    agent.append_system_prompt("");
+    CHECK_EQ(agent.system_prompt(), std::string("base"));
+}
+
 TEST("run: tool error becomes a tool message and the loop continues") {
     FakeProvider p;
     Turn t1;

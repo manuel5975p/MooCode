@@ -69,6 +69,11 @@ struct ProviderConnection {
     // OpenAI backend (other wire formats ignore them). The backend matches the
     // live base_url+model at request time, so this survives runtime /model swaps.
     std::vector<AllowedOpenAiParams> allowed_openai_params;
+    // Per-(base_url, model) pairs for which the reasoning_effort / thinking-budget
+    // control must be omitted from the request (backends that 400 on it). Carried
+    // to every wire format; each backend matches the live base_url+model at
+    // request time, so it survives runtime /model swaps.
+    std::vector<ModelEndpoint> drop_reasoning_effort;
 };
 
 // Build the concrete Provider for `c.kind`, applying `gp` (set_params) before

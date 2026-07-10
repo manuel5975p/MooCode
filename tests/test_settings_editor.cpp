@@ -13,7 +13,7 @@ using namespace moocode;
 TEST("settings_form_build creates 12 fields") {
     Settings s;
     auto form = settings_form_build(s);
-    CHECK_EQ(form.fields.size(), 12u);
+    CHECK_EQ(form.fields.size(), 14u);
 }
 
 TEST("rebuild copies all Settings fields into draft") {
@@ -178,7 +178,7 @@ TEST("display_value for rtk 1 shows on") {
 TEST("display_value for theme unset shows unset_label") {
     Settings s;
     auto form = settings_form_build(s);
-    std::string val = form.display_value(10, "", "");
+    std::string val = form.display_value(12, "", "");
     CHECK_EQ(val, std::string{"(unset)"});
 }
 
@@ -186,14 +186,14 @@ TEST("display_value for theme set shows value") {
     Settings s;
     s.theme = "mono";
     auto form = settings_form_build(s);
-    std::string val = form.display_value(10, "", "");
+    std::string val = form.display_value(12, "", "");
     CHECK_EQ(val, std::string{"mono"});
 }
 
 TEST("display_value for profile unset shows unset_label") {
     Settings s;
     auto form = settings_form_build(s);
-    std::string val = form.display_value(11, "", "");
+    std::string val = form.display_value(13, "", "");
     CHECK_EQ(val, std::string{"(none)"});
 }
 
@@ -201,7 +201,7 @@ TEST("display_value for profile set shows value") {
     Settings s;
     s.profile = "work";
     auto form = settings_form_build(s);
-    std::string val = form.display_value(11, "", "");
+    std::string val = form.display_value(13, "", "");
     CHECK_EQ(val, std::string{"work"});
 }
 
@@ -231,7 +231,7 @@ TEST("apply_value String field base_url") {
 TEST("apply_value String field profile") {
     Settings s;
     auto form = settings_form_build(s);
-    CHECK(form.apply_value(11, "work"));  // profile (idx 11)
+    CHECK(form.apply_value(13, "work"));  // profile (idx 13)
     CHECK_EQ(form.draft.profile, std::string{"work"});
 }
 
@@ -239,7 +239,7 @@ TEST("apply_value profile with (none) resets to empty") {
     Settings s;
     s.profile = "work";
     auto form = settings_form_build(s);
-    CHECK(form.apply_value(11, "(none)"));
+    CHECK(form.apply_value(13, "(none)"));
     CHECK(form.draft.profile.empty());
 }
 
@@ -472,7 +472,9 @@ TEST("field types match expected layout") {
     auto form = settings_form_build(s);
     // provider (Choice), model (String), base_url (String), context_window (Int),
     // max_iterations (Int), max_tokens (Int), effort (Choice), temperature (Double),
-    // thinking (BoolToggle), rtk (BoolToggle), theme (Choice), profile (String)
+    // thinking (BoolToggle), rtk (BoolToggle),
+    // allow_read_outside_root (BoolToggle), allow_write_outside_root (BoolToggle),
+    // theme (Choice), profile (String)
     CHECK_EQ(form.fields[0].type, FieldDef::Type::Choice);
     CHECK_EQ(form.fields[1].type, FieldDef::Type::String);
     CHECK_EQ(form.fields[2].type, FieldDef::Type::String);
@@ -483,8 +485,10 @@ TEST("field types match expected layout") {
     CHECK_EQ(form.fields[7].type, FieldDef::Type::Double);
     CHECK_EQ(form.fields[8].type, FieldDef::Type::BoolToggle);
     CHECK_EQ(form.fields[9].type, FieldDef::Type::BoolToggle);
-    CHECK_EQ(form.fields[10].type, FieldDef::Type::Choice);
-    CHECK_EQ(form.fields[11].type, FieldDef::Type::String);
+    CHECK_EQ(form.fields[10].type, FieldDef::Type::BoolToggle);
+    CHECK_EQ(form.fields[11].type, FieldDef::Type::BoolToggle);
+    CHECK_EQ(form.fields[12].type, FieldDef::Type::Choice);
+    CHECK_EQ(form.fields[13].type, FieldDef::Type::String);
 }
 
 // --- apply_value: out-of-range ------------------------------------------------

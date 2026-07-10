@@ -180,9 +180,9 @@ TEST("clangd: find_references resolves a real symbol (live)") {
 
     auto session = make_clangd_session(cfg);
     Tool refs = find_references_tool(session);
-    // resolve_in_root is declared at fsutil.hpp:21 (inline header function).
+    // resolve_in_root is declared at fsutil.hpp:26 (inline header function).
     auto out = refs.run(nlohmann::json{{"path", "src/agent/fsutil.hpp"},
-                                       {"line", 21},
+                                       {"line", 26},
                                        {"symbol", "resolve_in_root"}});
     CHECK(out.has_value());
     if (out) {

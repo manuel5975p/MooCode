@@ -35,6 +35,10 @@ struct OpenAiConfig {
     // array to the request, so proxies that gate fields like reasoning_effort
     // see them. No match => the key is omitted entirely.
     std::vector<AllowedOpenAiParams> allowed_openai_params;
+    // Per-(base_url, model) pairs for which reasoning_effort is omitted entirely,
+    // even when set above. For backends that reject the field. Matched against the
+    // live base_url+model at request time. No match => effort emitted as usual.
+    std::vector<ModelEndpoint> drop_reasoning_effort;
 
     OpenAiConfig() = default;
     explicit OpenAiConfig(const struct ProviderConnection& c);

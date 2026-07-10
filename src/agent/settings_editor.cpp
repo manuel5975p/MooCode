@@ -22,19 +22,21 @@ std::string float_str(double v) {
     return buf;
 }
 
-// Layout: the 12 General-tab fields in display order.
-constexpr int kFieldProvider       = 0;
-constexpr int kFieldModel          = 1;
-constexpr int kFieldBaseUrl        = 2;
-constexpr int kFieldContextWindow  = 3;
-constexpr int kFieldMaxIterations  = 4;
-constexpr int kFieldMaxTokens      = 5;
-constexpr int kFieldEffort         = 6;
-constexpr int kFieldTemperature    = 7;
-constexpr int kFieldThinking       = 8;
-constexpr int kFieldRtk            = 9;
-constexpr int kFieldTheme          = 10;
-constexpr int kFieldProfile        = 11;
+// Layout: the 14 General-tab fields in display order.
+constexpr int kFieldProvider          = 0;
+constexpr int kFieldModel             = 1;
+constexpr int kFieldBaseUrl           = 2;
+constexpr int kFieldContextWindow     = 3;
+constexpr int kFieldMaxIterations     = 4;
+constexpr int kFieldMaxTokens         = 5;
+constexpr int kFieldEffort            = 6;
+constexpr int kFieldTemperature       = 7;
+constexpr int kFieldThinking          = 8;
+constexpr int kFieldRtk               = 9;
+constexpr int kFieldReadOutsideRoot   = 10;
+constexpr int kFieldWriteOutsideRoot  = 11;
+constexpr int kFieldTheme             = 12;
+constexpr int kFieldProfile           = 13;
 
 // Profile detail fields (inline labels).
 struct ProfileField {
@@ -331,6 +333,10 @@ void SettingsForm::rebuild(const Settings& current) {
                       {"unset", "on", "off"}});
     fields.push_back({"rtk", FieldDef::Type::BoolToggle,
                       {"unset", "on", "off"}});
+    fields.push_back({"allow_read_outside_root", FieldDef::Type::BoolToggle,
+                      {"unset", "on", "off"}});
+    fields.push_back({"allow_write_outside_root", FieldDef::Type::BoolToggle,
+                      {"unset", "on", "off"}});
     fields.push_back({"theme", FieldDef::Type::Choice,
                       {"(unset)", "default", "mono", "vivid", "none"}});
     fields.push_back({"profile", FieldDef::Type::String, {}, "(none)"});
@@ -391,6 +397,12 @@ std::string SettingsForm::display_value(int idx,
     case kFieldRtk:
         if (draft.rtk < 0) return "unset";
         return draft.rtk > 0 ? "on" : "off";
+    case kFieldReadOutsideRoot:
+        if (draft.allow_read_outside_root < 0) return "unset";
+        return draft.allow_read_outside_root > 0 ? "on" : "off";
+    case kFieldWriteOutsideRoot:
+        if (draft.allow_write_outside_root < 0) return "unset";
+        return draft.allow_write_outside_root > 0 ? "on" : "off";
     case kFieldTheme:
         return draft.theme.empty() ? fields[idx].unset_label : draft.theme;
     case kFieldProfile:
@@ -461,6 +473,16 @@ bool SettingsForm::apply_value(int idx, std::string_view val) {
         if (val == "on") draft.rtk = 1;
         else if (val == "off") draft.rtk = 0;
         else draft.rtk = -1;
+        break;
+    case kFieldReadOutsideRoot:
+        if (val == "on") draft.allow_read_outside_root = 1;
+        else if (val == "off") draft.allow_read_outside_root = 0;
+        else draft.allow_read_outside_root = -1;
+        break;
+    case kFieldWriteOutsideRoot:
+        if (val == "on") draft.allow_write_outside_root = 1;
+        else if (val == "off") draft.allow_write_outside_root = 0;
+        else draft.allow_write_outside_root = -1;
         break;
     case kFieldTheme:
         draft.theme = (val == fields[idx].unset_label) ? "" : std::string(val);

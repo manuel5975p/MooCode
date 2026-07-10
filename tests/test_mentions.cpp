@@ -78,14 +78,27 @@ TEST("mentions: terminators end the path token (commas, parens, etc.)") {
     CHECK_EQ(r.entries[0].path, std::string("a.cpp"));
 }
 
-// --- sandboxing -------------------------------------------------------------
+// --- outside-root access ----------------------------------------------------
+// @-mentions carry the user's own authority (the user typed the path), so they
+// are never sandbox-confined — unlike model-issued read_file tool calls.
 
-TEST("mentions: paths escaping the root are reported as errors") {
-    test::TempDir d;
-    auto r = expand_mentions("please read @../escape.cpp", opts_for(d));
+TEST("mentions: an existing file outside the root resolves (no sandbox)") {
+    test::TempDir root, outside;
+    outside.write("escape.cpp", "int x;\n");
+    auto abs = (outside.path() / "escape.cpp").string();
+    auto r = expand_mentions("please read @" + abs, opts_for(root));
+    CHECK_EQ(r.entries.size(), std::size_t{1});
+    CHECK(r.entries[0].error.empty());
+    CHECK(r.prompt.find("int x;") != std::string::npos);
+}
+
+TEST("mentions: a missing path outside the root reports a non-sandbox error") {
+    test::TempDir root, outside;
+    auto abs = (outside.path() / "nope.cpp").string();
+    auto r = expand_mentions("please read @" + abs, opts_for(root));
     CHECK_EQ(r.entries.size(), std::size_t{1});
     CHECK(!r.entries[0].error.empty());
-    CHECK(r.entries[0].error.find("sandbox") != std::string::npos);
+    CHECK(r.entries[0].error.find("sandbox") == std::string::npos);
 }
 
 TEST("mentions: missing files are reported as errors, prompt still augmented") {

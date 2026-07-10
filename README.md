@@ -148,6 +148,8 @@ moocode [options] [prompt]
   --no-thinking          Force extended thinking OFF
   --rtk                  Force rtk output-compaction ON
   --no-rtk               Force rtk output-compaction OFF
+  --allow-read-outside-root   Let read_file/list_dir resolve paths outside the project root
+  --allow-write-outside-root  Let write_file/edit_file resolve paths outside the project root
   -c, --context-window <n> Context window size for the TUI token gauge
   -h, --help             Show help
 ```
@@ -167,6 +169,8 @@ Config precedence: **flags > `LLM_*` env vars > active profile >
 | `LLM_MODEL` | Model name | OpenAI: `MiniMax-M3`<br>Anthropic: `claude-sonnet-4-6` |
 | `MOOCODE_HOME` | State directory | `~/.moo` |
 | `MOOCODE_RTK` | rtk output-compaction (`0`/`1`) | on when `rtk` is on `$PATH` |
+| `MOOCODE_ALLOW_READ_OUTSIDE_ROOT` | read_file/list_dir may escape the project root (`0`/`1`) | off |
+| `MOOCODE_ALLOW_WRITE_OUTSIDE_ROOT` | write_file/edit_file may escape the project root (`0`/`1`) | off |
 | `SEARXNG_URL` | SearXNG instance URL | `http://localhost:8080` |
 | `TAVILY_API_KEY` | Tavily API key (search fallback) | — |
 | `CLANGD_PATH` | clangd binary | `clangd` |
@@ -179,7 +183,8 @@ Config precedence: **flags > `LLM_*` env vars > active profile >
 ```
 ~/.moo/
   settings.toml       base_url, model, provider, profile, max_iterations, max_tokens,
-                      effort, temperature, thinking, rtk, context_window, [profiles.*]
+                      effort, temperature, thinking, rtk, context_window,
+                      allow_read_outside_root, allow_write_outside_root, [profiles.*]
   credentials.toml    per-profile API keys  (chmod 0600)
   permissions.toml    always-allowed tool list
   history             input-line history

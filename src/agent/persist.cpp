@@ -150,6 +150,10 @@ Settings load_settings(const std::string& home) {
     if (auto v = t["temperature"].value<double>()) s.temperature = *v;
     if (auto v = t["thinking"].value<bool>()) s.thinking = *v ? 1 : 0;
     if (auto v = t["rtk"].value<bool>()) s.rtk = *v ? 1 : 0;
+    if (auto v = t["allow_read_outside_root"].value<bool>())
+        s.allow_read_outside_root = *v ? 1 : 0;
+    if (auto v = t["allow_write_outside_root"].value<bool>())
+        s.allow_write_outside_root = *v ? 1 : 0;
     if (auto v = t["theme"].value<std::string>()) s.theme = *v;
     if (auto v = t["profile"].value<std::string>()) s.profile = *v;
 
@@ -197,6 +201,20 @@ Settings load_settings(const std::string& home) {
             s.allowed_openai_params.push_back(std::move(e));
         }
     }
+
+    // [[drop_reasoning_effort]]: array of {base_url, model} tables. Order
+    // preserved (no sort); matching is by content. A partially-written entry
+    // (missing a field) loads as an empty string and simply never matches.
+    if (const toml::array* arr = t["drop_reasoning_effort"].as_array()) {
+        for (const toml::node& n : *arr) {
+            const toml::table* et = n.as_table();
+            if (!et) continue;
+            ModelEndpoint e;
+            if (auto v = (*et)["base_url"].value<std::string>()) e.base_url = *v;
+            if (auto v = (*et)["model"].value<std::string>()) e.model = *v;
+            s.drop_reasoning_effort.push_back(std::move(e));
+        }
+    }
     return s;
 }
 
@@ -215,6 +233,10 @@ void save_settings(const std::string& home, const Settings& s) {
     if (s.temperature >= 0) t.insert("temperature", s.temperature);
     if (s.thinking >= 0) t.insert("thinking", s.thinking != 0);
     if (s.rtk >= 0) t.insert("rtk", s.rtk != 0);
+    if (s.allow_read_outside_root >= 0)
+        t.insert("allow_read_outside_root", s.allow_read_outside_root != 0);
+    if (s.allow_write_outside_root >= 0)
+        t.insert("allow_write_outside_root", s.allow_write_outside_root != 0);
     if (!s.theme.empty()) t.insert("theme", s.theme);
     if (!s.profile.empty()) t.insert("profile", s.profile);
 
@@ -266,6 +288,19 @@ void save_settings(const std::string& home, const Settings& s) {
             arr.push_back(std::move(et));
         }
         t.insert("allowed_openai_params", std::move(arr));
+    }
+
+    // [[drop_reasoning_effort]] array-of-tables, written in in-memory order (no
+    // sort: these have no natural key and the file order is the user's).
+    if (!s.drop_reasoning_effort.empty()) {
+        toml::array arr;
+        for (const ModelEndpoint& e : s.drop_reasoning_effort) {
+            toml::table et;
+            if (!e.base_url.empty()) et.insert("base_url", e.base_url);
+            if (!e.model.empty()) et.insert("model", e.model);
+            arr.push_back(std::move(et));
+        }
+        t.insert("drop_reasoning_effort", std::move(arr));
     }
     std::ofstream out(home + "/settings.toml", std::ios::binary | std::ios::trunc);
     if (out) out << t << '\n';

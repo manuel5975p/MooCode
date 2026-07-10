@@ -45,6 +45,10 @@ struct GeminiConfig {
     std::string reasoning_effort;  // "low"/"medium"/"high"; "" => omit thinkingConfig
     std::optional<bool> thinking;  // nullopt => omit; true/false => thinkingConfig
     int max_tokens = 0;            // <= 0 => omit; else maxOutputTokens
+    // Per-(base_url, model) pairs for which reasoning_effort is treated as empty
+    // when computing the thinking budget. For backends that reject it. Matched
+    // against the live base_url+model at request time.
+    std::vector<ModelEndpoint> drop_reasoning_effort;
 
     GeminiConfig() = default;
     explicit GeminiConfig(const struct ProviderConnection& c);

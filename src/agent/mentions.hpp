@@ -20,12 +20,15 @@
 namespace moocode {
 
 struct MentionOptions {
-    std::filesystem::path root;             // confinement root (same rules as builtin tools)
+    std::filesystem::path root;             // base dir for resolving relative @-mention paths
     std::size_t max_file_bytes = 64 * 1024; // per-file cap; truncates with a marker
     std::size_t max_total_bytes = 256 * 1024; // total cap across all attachments
     std::size_t max_files = 32;             // hard cap on the number of attachments
     bool include_suggestions = true;        // include the "key elements" line per file
     bool recursive_globs = false;           // expand "**" across subdirectories
+    // @-mentions are never sandbox-confined: they are typed by the user and so
+    // carry the user's own authority to read any path they name (absolute,
+    // relative, or through a symlink), unlike model-issued tool calls.
 };
 
 struct MentionEntry {

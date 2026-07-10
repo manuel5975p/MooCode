@@ -226,6 +226,17 @@ TEST("build_generate_request: thinking on => thinkingConfig with budget") {
     CHECK_EQ(tk["includeThoughts"], true);
 }
 
+TEST("build_generate_request: drop_reasoning_effort => default budget") {
+    GeminiConfig c = cfg();
+    c.thinking = true;
+    c.reasoning_effort = "high";  // would give 24576...
+    c.drop_reasoning_effort = {
+        {"https://generativelanguage.googleapis.com/v1beta", "gemini-test"}};
+    auto req = build_generate_request(c, {Message::user("hi")}, {});
+    // Effort dropped => budget falls back to the default (8192), not 24576.
+    CHECK_EQ(req["generationConfig"]["thinkingConfig"]["thinkingBudget"], 8192);
+}
+
 TEST("build_generate_request: thinking off => budget 0") {
     GeminiConfig c = cfg();
     c.thinking = false;

@@ -11,6 +11,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "agent/strutil.hpp"  // to_lower (model_endpoint_matched)
+
 namespace moocode {
 
 // Coarse category for an Error, orthogonal to the layer-defined `code`. Lets a
@@ -179,6 +181,33 @@ struct AllowedOpenAiParams {
     std::string model;
     std::vector<std::string> params;  // e.g. {"reasoning_effort"}
 };
+
+// A per-(endpoint, model) match identifying one provider/model pair. Used to
+// suppress request fields that a specific backend rejects — e.g. dropping the
+// reasoning_effort / thinking-budget control for a model that 400s on it.
+// Matched tolerant of a trailing slash on base_url and case-insensitively on
+// model, mirroring AllowedOpenAiParams. Lives in the shared base layer so both
+// agent_persist (Settings) and the provider layer name one type.
+struct ModelEndpoint {
+    std::string base_url;
+    std::string model;
+};
+
+// True if any entry in `list` matches `base_url` (ignoring one trailing slash)
+// and `model` (case-insensitive). Empty list => false. Pure, total.
+inline bool model_endpoint_matched(const std::vector<ModelEndpoint>& list,
+                                   std::string_view base_url,
+                                   std::string_view model) {
+    auto trim = [](std::string_view s) {
+        if (!s.empty() && s.back() == '/') s.remove_suffix(1);
+        return s;
+    };
+    const std::string m = to_lower(model);
+    for (const ModelEndpoint& e : list)
+        if (trim(e.base_url) == trim(base_url) && to_lower(e.model) == m)
+            return true;
+    return false;
+}
 
 // Syntax-highlight colour scheme for fenced code blocks. Lived in tui.hpp but
 // moved here so the lightweight tui_slash.hpp can name it without pulling in

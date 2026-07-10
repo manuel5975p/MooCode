@@ -68,6 +68,8 @@ struct Settings {
     double temperature = -1;  // < 0 => unset (0 is a valid temperature)
     int thinking = -1;        // -1 => unset, 0 => off, 1 => on
     int rtk = -1;             // rtk command-rewrite: -1 unset, 0 off, 1 on
+    int allow_read_outside_root = -1;   // read_file/list_dir may escape root: -1 unset, 0 off, 1 on
+    int allow_write_outside_root = -1;  // write_file/edit_file may escape root: -1 unset, 0 off, 1 on
     std::string theme;        // code-block syntax theme name; empty => unset
     std::string profile;            // active profile name; empty => none
     std::vector<Profile> profiles;  // [profiles.*] tables, sorted by name
@@ -75,6 +77,11 @@ struct Settings {
     // param passthrough allowlists for OpenAI-compatible proxies (see
     // AllowedOpenAiParams). Empty when unconfigured. Order preserved from file.
     std::vector<AllowedOpenAiParams> allowed_openai_params;
+    // [[drop_reasoning_effort]] array-of-tables: per-(base_url, model) pairs for
+    // which the reasoning_effort / thinking-budget control is omitted from the
+    // request (backends that reject it; see ModelEndpoint). Empty when
+    // unconfigured. Order preserved from file.
+    std::vector<ModelEndpoint> drop_reasoning_effort;
 };
 
 // Load settings.toml (missing or malformed => default-constructed, never errors).

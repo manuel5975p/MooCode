@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -365,12 +366,20 @@ private:
 // pre: stdout is a tty.
 // When `skills` and `tool_reg` are both non-null, the `/skill` command lets the
 // user load an optional skill into the live tool registry between turns.
+// When `escape_approver` is non-null and `perms` is set, its pointee is
+// installed to prompt (via the same modal) whenever a tool resolves a path
+// outside the project root — the interactive "outside root" permission tier,
+// recorded in `perms` under a `read_outside_root`/`write_outside_root` key.
 int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             std::shared_ptr<std::function<void(const FileChange&)>> sink = {},
             QuestionGate* question_gate_ptr = {},
             std::shared_ptr<SubagentActivityFn> on_subagent_activity = {},
             std::shared_ptr<SubagentTextFn> on_subagent_text = {},
-            SkillRegistry* skills = {}, ToolRegistry* tool_reg = {});
+            SkillRegistry* skills = {}, ToolRegistry* tool_reg = {},
+            std::shared_ptr<std::function<bool(
+                std::string_view, const std::filesystem::path&,
+                const std::string&)>>
+                escape_approver = {});
 
 }  // namespace moocode
 
