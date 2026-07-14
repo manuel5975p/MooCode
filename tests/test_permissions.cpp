@@ -120,3 +120,68 @@ TEST("Permissions: concurrent grants are race-free and all stick") {
     // Each distinct always-grant fires the save hook exactly once.
     CHECK_EQ(saves.load(), 16);
 }
+
+// --- pattern permissions: tool(glob) entries ---------------------------------
+
+namespace {
+ToolCall bashcall(std::string cmd) {
+    return ToolCall{.id = "id", .name = "run_bash",
+                    .arguments_json = std::string("{\"cmd\":\"") + cmd + "\"}"};
+}
+ToolCall pathed(std::string tool, std::string path) {
+    return ToolCall{.id = "id", .name = std::move(tool),
+                    .arguments_json = std::string("{\"path\":\"") + path + "\"}"};
+}
+}  // namespace
+
+TEST("glob_match: literal, star, and anchoring") {
+    CHECK(glob_match("git status", "git status"));
+    CHECK(!glob_match("git status", "git statusx"));
+    CHECK(glob_match("git *", "git log --oneline"));
+    CHECK(!glob_match("git *", "gitk"));
+    CHECK(glob_match("*", ""));
+    CHECK(glob_match("*", "anything at all"));
+    CHECK(glob_match("*.cpp", "src/agent/main.cpp"));
+    CHECK(!glob_match("*.cpp", "src/agent/main.hpp"));
+    CHECK(glob_match("src/*/test_*", "src/agent/test_foo"));
+    CHECK(glob_match("a**b", "ab"));
+    CHECK(!glob_match("", "x"));
+    CHECK(glob_match("", ""));
+}
+
+TEST("permission_subject: cmd wins, then path, else empty") {
+    CHECK_EQ(permission_subject(bashcall("ninja -C build")), "ninja -C build");
+    CHECK_EQ(permission_subject(pathed("read_file", "src/a.cpp")), "src/a.cpp");
+    ToolCall none{.id = "id", .name = "web_search",
+                  .arguments_json = "{\"query\":\"x\"}"};
+    CHECK_EQ(permission_subject(none), "");
+    // Non-JSON args (the *_outside_root escape prompts) are the subject itself.
+    ToolCall esc{.id = "id", .name = "read_outside_root",
+                 .arguments_json = "/etc/passwd"};
+    CHECK_EQ(permission_subject(esc), "/etc/passwd");
+}
+
+TEST("Permissions: tool(pattern) entry gates on the subject") {
+    Permissions p{std::set<std::string>{"run_bash(git *)", "read_file(src/*)"}};
+    CHECK(p.allowed("run_bash", "git status"));
+    CHECK(!p.allowed("run_bash", "rm -rf /"));
+    CHECK(p.allowed("read_file", "src/main.cpp"));
+    CHECK(!p.allowed("read_file", "/etc/passwd"));
+    // Bare-name check without subject still works for plain entries only.
+    CHECK(!p.allowed("run_bash"));
+}
+
+TEST("decide: pattern always-entry runs without prompting") {
+    Permissions p{std::set<std::string>{"run_bash(cmake *)"}};
+    bool prompted = false;
+    CHECK(decide(p, bashcall("cmake --build build"),
+                 [&](const ToolCall&) { prompted = true; return Approval::Deny; }));
+    CHECK(!prompted);
+    CHECK(!decide(p, bashcall("shutdown now"),
+                  [](const ToolCall&) { return Approval::Deny; }));
+}
+
+TEST("Permissions: bare tool entry still allows any subject") {
+    Permissions p{std::set<std::string>{"run_bash"}};
+    CHECK(p.allowed("run_bash", "anything"));
+}

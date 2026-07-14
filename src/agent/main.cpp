@@ -245,6 +245,13 @@ po::parser make_parser() {
     p["no-tools"].description(
         "Chat-only: omit the JSON tool schema from every request and the tool "
         "list from the system prompt, so the model cannot call tools");
+    p["disable-tools"].type(po::string).description(
+        "Comma-separated tool names to unregister (they vanish from the "
+        "schema and the system prompt); unknown names are ignored");
+    p["show-reasoning"].description(
+        "Non-interactive mode: stream the raw reasoning text to stderr, "
+        "framed by dim [reasoning]/[/reasoning] lines, instead of the "
+        "in-place token counter");
     p["no-env"].description(
         "Do not load MOO.md environment inputs (global ~/.moo/MOO.md and "
         "project-local MOO.md) into the system prompt");
@@ -946,6 +953,21 @@ int main(int argc, char** argv) {
     // &reg by reference — both live for the whole session.
     reg.add(load_skill_tool(skills, reg));
 
+    // --disable-tools: unregister selected tools after every registration, so
+    // the schema and the {TOOLS} prompt listing agree on the final set.
+    if (cli["disable-tools"].was_set()) {
+        std::string_view csv = cli["disable-tools"].get().string;
+        while (!csv.empty()) {
+            const std::size_t comma = csv.find(',');
+            std::string_view name = csv.substr(0, comma);
+            while (!name.empty() && name.front() == ' ') name.remove_prefix(1);
+            while (!name.empty() && name.back() == ' ') name.remove_suffix(1);
+            if (!name.empty()) reg.remove(std::string(name));
+            if (comma == std::string_view::npos) break;
+            csv.remove_prefix(comma + 1);
+        }
+    }
+
     // Fold live context (tools, cwd, ls, time, OS) into the prompt template.
     // This runs after spawn_subagent registration so {TOOLS} includes it.
     expand_system_prompt(system, opts.root, reg, advertise_tools);
@@ -1038,27 +1060,45 @@ int main(int argc, char** argv) {
     // of the reasoning length (~4 bytes/token, since the server only reports real
     // usage once the stream ends). `reasoning_open` tracks that in-progress line
     // so it can be closed (reset + newline) before answer/tool output interleaves.
+    // --show-reasoning trades the counter for the raw text, framed by dim
+    // sentinel lines so a machine consumer (the VS Code extension) can carve
+    // the reasoning out of the merged stream.
+    const bool show_reasoning = cli["show-reasoning"].was_set();
     auto reasoning_open = std::make_shared<bool>(false);
     auto reasoning_chars = std::make_shared<std::size_t>(0);
-    std::function<void()> close_reasoning = [reasoning_open, reasoning_chars] {
+    std::function<void()> close_reasoning = [reasoning_open, reasoning_chars,
+                                             show_reasoning] {
         if (*reasoning_open) {
-            std::fputs("\033[0m\n", stderr);  // reset dim, end the line
+            if (show_reasoning)
+                std::fputs("\n\033[2m[/reasoning]\033[0m\n", stderr);
+            else
+                std::fputs("\033[0m\n", stderr);  // reset dim, end the line
             std::fflush(stderr);
             *reasoning_open = false;
             *reasoning_chars = 0;
         }
     };
 
-    agent.on_delta([reasoning_open, reasoning_chars, close_reasoning](
-                       std::string_view answer, std::string_view reasoning) {
+    agent.on_delta([reasoning_open, reasoning_chars, close_reasoning,
+                    show_reasoning](std::string_view answer,
+                                    std::string_view reasoning) {
         if (!reasoning.empty()) {
-            *reasoning_open = true;
-            *reasoning_chars += reasoning.size();
-            std::size_t approx_tokens = (*reasoning_chars + 3) / 4;
-            // \r rewrites the line, \033[K clears any shorter previous render.
-            std::fprintf(stderr, "\r\033[2m💭 thinking… (~%zu tokens)\033[0m\033[K",
-                         approx_tokens);
-            std::fflush(stderr);
+            if (show_reasoning) {
+                if (!*reasoning_open)
+                    std::fputs("\033[2m[reasoning]\033[0m\n", stderr);
+                *reasoning_open = true;
+                std::fwrite(reasoning.data(), 1, reasoning.size(), stderr);
+                std::fflush(stderr);
+            } else {
+                *reasoning_open = true;
+                *reasoning_chars += reasoning.size();
+                std::size_t approx_tokens = (*reasoning_chars + 3) / 4;
+                // \r rewrites the line, \033[K clears any shorter previous render.
+                std::fprintf(stderr,
+                             "\r\033[2m💭 thinking… (~%zu tokens)\033[0m\033[K",
+                             approx_tokens);
+                std::fflush(stderr);
+            }
         }
         if (!answer.empty()) {
             close_reasoning();
@@ -1068,14 +1108,59 @@ int main(int argc, char** argv) {
     });
 
     // The tool calls being made are shown on stderr (assistant prose has already
-    // streamed via on_delta; the often-large tool results are omitted).
-    agent.on_message([close_reasoning](const Message& m) {
+    // streamed via on_delta; the often-large tool results are omitted). A
+    // spawn_subagent* call additionally opens a sub-agent group for machine
+    // consumers: its result prints a dim "  ·= ok|failed" close marker, and the
+    // nested activity below mirrors into dim "  ·>" / "  ·<" / "  ·:" lines.
+    auto pending_spawns = std::make_shared<std::set<std::string>>();
+    agent.on_message([close_reasoning, pending_spawns](const Message& m) {
+        if (m.role() == Role::Tool) {
+            if (pending_spawns->erase(m.tool_call_id()) > 0) {
+                std::fprintf(stderr, "\033[2m  ·= %s\033[0m\n",
+                             m.tool_failed() ? "failed" : "ok");
+                std::fflush(stderr);
+            }
+            return;
+        }
         if (m.role() != Role::Assistant || m.tool_calls().empty()) return;
         close_reasoning();
-        for (const auto& tc : m.tool_calls())
+        for (const auto& tc : m.tool_calls()) {
             std::fprintf(stderr, "\n  -> %s(%s)\n", tc.name.c_str(),
                          tc.arguments_json.c_str());
+            if (tc.name.starts_with("spawn_subagent"))
+                pending_spawns->insert(tc.id);
+        }
     });
+
+    // Sub-agent activity: nested tool calls, per-call results, and assistant
+    // text mirror onto stderr as one-line dim productions so the VS Code
+    // extension can render live sub-agent groups (the TUI uses these same
+    // callbacks for its subagents pane). Sub-agents run sequentially inside
+    // one spawn call, so consumers attribute lines to the oldest open group.
+    // Lines are clipped to one line well under the extension's pty width.
+    auto sub_line = [](std::string_view s) {
+        std::string out = one_line(s, 360);
+        for (char& c : out)
+            if (static_cast<unsigned char>(c) < 0x20) c = ' ';
+        return out;
+    };
+    *on_sub_activity = [sub_line](std::string, std::string name,
+                                  std::string args, SubagentActivityStatus st,
+                                  std::string) {
+        if (st == SubagentActivityStatus::Running)
+            std::fprintf(stderr, "\033[2m  ·> %s(%s)\033[0m\n", name.c_str(),
+                         sub_line(args).c_str());
+        else
+            std::fprintf(stderr, "\033[2m  ·< %s\033[0m\n",
+                         st == SubagentActivityStatus::Ok ? "ok" : "failed");
+        std::fflush(stderr);
+    };
+    *on_sub_text = [sub_line](std::string text) {
+        std::string line = sub_line(text);
+        if (line.empty()) return;
+        std::fprintf(stderr, "\033[2m  ·: %s\033[0m\n", line.c_str());
+        std::fflush(stderr);
+    };
 
     // Once a turn completes the server reports real usage; print the exact
     // completion-token count (supersedes the live reasoning estimate above).

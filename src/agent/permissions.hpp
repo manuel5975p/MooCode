@@ -10,6 +10,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 
 #include "agent/types.hpp"  // ToolCall
 
@@ -31,7 +32,10 @@ public:
     explicit Permissions(std::set<std::string> always = {}, SaveFn save = {});
 
     // True if `tool` may run without prompting (session or always tier).
-    bool allowed(const std::string& tool) const;
+    // Matches a bare `tool` entry, or a `tool(pattern)` entry whose glob
+    // (`*` wildcard) matches `subject` — the call's salient argument (see
+    // permission_subject). pre: none. post: no throw.
+    bool allowed(const std::string& tool, const std::string& subject = {}) const;
 
     // Remember `tool` for the rest of this process.
     void grant_session(const std::string& tool);
@@ -51,6 +55,14 @@ private:
 
 // Asks the user how to handle one tool call. Returns their choice.
 using Prompter = std::function<Approval(const ToolCall&)>;
+
+// The argument a `tool(pattern)` permission is matched against: "cmd" for
+// bash-like tools, else "path", else "". Malformed JSON => "".
+std::string permission_subject(const ToolCall& tc);
+
+// Glob match with `*` (any run, including empty) as the only wildcard.
+// pre: none. post: no throw.
+bool glob_match(std::string_view pattern, std::string_view subject);
 
 // Decide whether to run `tc`: already allowed => true with no prompt; otherwise
 // prompt, record any Session/Always grant in `perms`, and return run/skip. Deny

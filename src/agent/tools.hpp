@@ -30,6 +30,9 @@ public:
     // True if a tool with this name is registered.
     bool has(const std::string& name) const;
 
+    // Unregister a tool by name. Returns true if one was removed.
+    bool remove(const std::string& name);
+
     // Advertised specs in registration order (deterministic for stable output).
     std::vector<ToolSpec> specs() const;
 

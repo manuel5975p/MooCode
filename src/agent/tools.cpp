@@ -16,6 +16,11 @@ void ToolRegistry::add(Tool tool) {
         tools_.push_back(std::move(tool));
 }
 
+bool ToolRegistry::remove(const std::string& name) {
+    return std::erase_if(tools_,
+                         [&](const Tool& t) { return t.spec.name == name; }) > 0;
+}
+
 bool ToolRegistry::has(const std::string& name) const {
     return std::ranges::any_of(tools_,
                                [&](const Tool& t) { return t.spec.name == name; });
