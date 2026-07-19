@@ -114,7 +114,8 @@ const std::vector<std::string>& busy_words() {
         "Am grosschotze", "Am drischisse", "Am rätschbäsele", "Am tschumple", "Am tüpflischisse",
         "Am umesuddle", "Am veschlimmbessere", "Am ineworgle", "Am schafseckle", "Am toblerönle",
         "Am Lindt & Sprüngle", "Am caquelon rüere", "Am velööle", "Am sürmle", "Am aateigge",
-        "Am gigampfe", "Am schnuddere", "Am böögge", "Am höie", "Am rübis und stübise", 
+        "Am gigampfe", "Am schnuddere", "Am böögge", "Am höie", "Am rübis und stübise", "Am umelaane",
+        "Am soitätsche", "Am Jasse",
     };
     return w;
 }
