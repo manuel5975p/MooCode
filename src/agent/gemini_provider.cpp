@@ -183,7 +183,7 @@ nlohmann::json build_generate_request(const GeminiConfig& cfg,
             nlohmann::json::array({{{"text", system_text}}});
 
     nlohmann::json gen;
-    gen["temperature"] = cfg.temperature;
+    if (cfg.temperature) gen["temperature"] = *cfg.temperature;  // opt-in: omit unless set
     if (cfg.max_tokens > 0) gen["maxOutputTokens"] = cfg.max_tokens;
     if (cfg.thinking) {
         if (*cfg.thinking) {

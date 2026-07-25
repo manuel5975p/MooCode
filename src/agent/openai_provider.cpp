@@ -79,7 +79,9 @@ nlohmann::json build_chat_request(const OpenAiConfig& cfg, const Conversation& c
                                   const std::vector<ToolSpec>& tools, bool stream) {
     nlohmann::json req;
     req["model"] = cfg.model;
-    req["temperature"] = cfg.temperature;
+    // temperature is opt-in: omitted unless configured, so endpoints that only
+    // accept a specific value (e.g. Kimi: 1) aren't broken by an unsolicited 0.
+    if (cfg.temperature) req["temperature"] = *cfg.temperature;
     if (cfg.max_tokens > 0) req["max_tokens"] = cfg.max_tokens;
     // Optional reasoning controls — emitted only when explicitly configured so
     // strict OpenAI-compatible servers that reject unknown fields stay happy.
@@ -430,7 +432,7 @@ bool openai_model_likely_reasoning(std::string_view model) {
     const std::string m = to_lower(model);
     static constexpr std::string_view kFamilies[] = {
         "deepseek", "minimax", "claude", "gpt-5", "o1",
-        "o3",       "o4",      "qwen",   "glm",   "grok", "gemini",
+        "o3",       "o4",      "qwen",   "glm",   "grok", "gemini", "kimi",
     };
     for (std::string_view fam : kFamilies)
         if (m.find(fam) != std::string::npos) return true;

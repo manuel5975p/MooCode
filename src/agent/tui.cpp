@@ -623,36 +623,9 @@ std::string last_lines(std::string_view text, std::size_t n) {
     return out;
 }
 
-// --- syntax theme names -----------------------------------------------------
-// One ordered table is the single source of truth for both directions of the
-// name↔id mapping plus the /theme listing, so the set can never drift.
-namespace {
-constexpr std::pair<SyntaxTheme, std::string_view> kThemeTable[] = {
-    {SyntaxTheme::Default, "default"},
-    {SyntaxTheme::Mono, "mono"},
-    {SyntaxTheme::Vivid, "vivid"},
-    {SyntaxTheme::None, "none"},
-};
-}  // namespace
-
-std::string_view syntax_theme_name(SyntaxTheme t) {
-    for (const auto& [id, name] : kThemeTable)
-        if (id == t) return name;
-    return "default";
-}
-
-std::optional<SyntaxTheme> syntax_theme_from_name(std::string_view name) {
-    const std::string want = to_lower(name);
-    for (const auto& [id, n] : kThemeTable)
-        if (n == want) return id;
-    return std::nullopt;
-}
-
-std::vector<std::string> syntax_theme_names() {
-    std::vector<std::string> names;
-    for (const auto& [id, name] : kThemeTable) names.emplace_back(name);
-    return names;
-}
+// The syntax_theme_name / _from_name / _names mapping declared in types.hpp is
+// defined in agent_syntax (syntax_highlight.cpp), so the Qt GUI can resolve
+// settings.theme without linking FTXUI.
 
 // --- ApprovalGate -----------------------------------------------------------
 
@@ -1570,6 +1543,20 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         return std::string(buf);
     };
 
+    // Mint a conversation file path that is not already taken. Ids carry a
+    // one-second-resolution timestamp, so two conversations born in the same
+    // second (a /fork right after the parent's file was minted) would otherwise
+    // land on the same path and clobber one another.
+    auto unique_conversation_path = [&] {
+        const std::string dir = conversations_dir(info.home);
+        const std::string id = new_conversation_id(info.cwd);
+        std::string path = dir + "/" + id + ".toml";
+        std::error_code ec;
+        for (int n = 2; std::filesystem::exists(path, ec); ++n)
+            path = dir + "/" + id + "-" + std::to_string(n) + ".toml";
+        return path;
+    };
+
     // Persist the current history to conv_path. Called on the worker thread (no
     // UI race on history) after each run, and once on clean exit. No-op when
     // persistence is off or no conversation has been started yet.
@@ -2412,6 +2399,14 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                      std::string key = key_for_profile(p->name);
                      switch_connection(k, p->base_url, key, std::string(arg),
                                        p->name, p->thinking_type);
+                     // A profile-pinned temperature overrides the carried one:
+                     // the profile knows its endpoint's accepted values (e.g.
+                     // Kimi's coding API accepts only 1).
+                     if (p->temperature >= 0) {
+                         GenerationParams gp;
+                         gp.temperature = p->temperature;
+                         agent.provider().set_params(gp);
+                     }
                      state.push_info(
                          "model → " + std::string(arg) + "  (" + info.provider +
                          " · " + info.base_url +
@@ -2530,6 +2525,13 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                          const std::string prof_name = p->name;
                          switch_connection(k, p->base_url, key, mdl, prof_name,
                                            p->thinking_type);
+                         // Apply the profile's pinned temperature, if any (see
+                         // the /model handler for why it beats the carried one).
+                         if (p->temperature >= 0) {
+                             GenerationParams gp;
+                             gp.temperature = p->temperature;
+                             agent.provider().set_params(gp);
+                         }
                          state.push_info(
                              "provider → " + prof_name + "  (" + info.provider +
                              " · " + info.base_url + " · " + info.model +
@@ -2702,6 +2704,44 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         },
         &input_content, &cursor_pos, &state_mtx, &model_complete);
 
+    // Raise the "pick a user message" overlay shared by /rewind and /fork.
+    // Entries run newest-first: the turn you want to go back to is nearly always
+    // a recent one, so it sits at the top with the cursor already on it.
+    // `make_action` maps (history index, that message's text) to the callback
+    // Enter runs. Returns false (leaving the overlay down) when the conversation
+    // holds no user message to pick.
+    auto raise_message_picker = [&](std::string title,
+                                    auto make_action) -> bool {
+        const Conversation& h = agent.history();
+        std::lock_guard lk(state_mtx);
+        picker = Picker{};
+        for (std::size_t n = h.size(); n-- > 0;) {
+            if (h[n].role() != Role::User) continue;
+            picker.items.push_back(one_line(h[n].content(), 70));
+            picker.on_choose.push_back(make_action(n, h[n].content()));
+        }
+        if (picker.items.empty()) return false;
+        picker.active = true;
+        picker.title = std::move(title);
+        return true;
+    };
+
+    // Truncate the live conversation to everything *before* history index `idx`
+    // and put that message's text back in the prompt for editing. Shared by
+    // /rewind (in place) and /fork (into a fresh file). Caller must not hold
+    // state_mtx.
+    auto truncate_to = [&](std::size_t idx, const std::string& txt) {
+        Conversation trunc(agent.history().begin(),
+                           agent.history().begin() + idx);
+        agent.set_history(trunc);
+        {
+            std::lock_guard lk(state_mtx);
+            state.load(trunc);
+        }
+        input_content = txt;
+        cursor_pos = static_cast<int>(txt.size());
+    };
+
     auto submit = [&] {
         std::string line = input_content;
         if (is_blank(line)) return;
@@ -2783,31 +2823,50 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                 return;
             }
             if (line == "/rewind") {
-                const Conversation& h = agent.history();
-                std::lock_guard lk(state_mtx);
-                picker = Picker{};
-                for (std::size_t i = 0; i < h.size(); ++i) {
-                    if (h[i].role() != Role::User) continue;
-                    picker.items.push_back(one_line(h[i].content(), 70));
-                    const std::size_t idx = i;
-                    std::string txt = h[i].content();
-                    picker.on_choose.push_back([&, idx, txt] {
-                        Conversation trunc(agent.history().begin(),
-                                           agent.history().begin() + idx);
-                        agent.set_history(trunc);
-                        {
-                            std::lock_guard lk2(state_mtx);
-                            state.load(trunc);
-                        }
-                        input_content = txt;
-                        cursor_pos = static_cast<int>(txt.size());
+                bool ok = raise_message_picker(
+                    " rewind to message (newest first) ",
+                    [&](std::size_t idx, std::string txt) {
+                        return std::function<void()>(
+                            [&, idx, txt] { truncate_to(idx, txt); });
                     });
-                }
-                if (picker.items.empty()) {
+                if (!ok) {
+                    std::lock_guard lk(state_mtx);
                     state.push_error("nothing to rewind to");
-                } else {
-                    picker.active = true;
-                    picker.title = " rewind to message ";
+                }
+                input_content.clear();
+                post();
+                return;
+            }
+            // Like /rewind, but the truncated branch is adopted under a *new*
+            // conversation file: the parent is saved first and left untouched on
+            // disk, so both branches survive and are separately resumable.
+            if (line == "/fork") {
+                bool ok = raise_message_picker(
+                    " fork from message (newest first) ",
+                    [&](std::size_t idx, std::string txt) {
+                        return std::function<void()>([&, idx, txt] {
+                            save_now();  // persist the parent branch, intact
+                            truncate_to(idx, txt);
+                            std::lock_guard lk(state_mtx);
+                            if (info.home.empty()) {
+                                state.push_info(
+                                    "forked (persistence off — nothing saved)");
+                                return;
+                            }
+                            conv_path = unique_conversation_path();
+                            meta.created = now_iso();
+                            if (meta.title.empty())
+                                meta.title = one_line(txt, 80);
+                            if (!meta.title.starts_with("fork: "))
+                                meta.title = "fork: " + meta.title;
+                            state.push_info(
+                                "forked — this branch now saves to a new "
+                                "conversation, the original is untouched");
+                        });
+                    });
+                if (!ok) {
+                    std::lock_guard lk(state_mtx);
+                    state.push_error("nothing to fork from");
                 }
                 input_content.clear();
                 post();
@@ -3049,8 +3108,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             // Mint the conversation file lazily on the first user turn (unless a
             // conversation was loaded, which already set conv_path).
             if (conv_path.empty() && !info.home.empty()) {
-                std::string id = new_conversation_id(info.cwd);
-                conv_path = conversations_dir(info.home) + "/" + id + ".toml";
+                conv_path = unique_conversation_path();
                 if (meta.created.empty()) meta.created = now_iso();
                 if (meta.title.empty()) meta.title = one_line(line, 80);
             }
@@ -3239,6 +3297,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             GenerationParams gp = pv.params();
             if (gp.effort) ctl += "e:" + *gp.effort + " ";
             if (gp.thinking) ctl += *gp.thinking ? "think:on " : "think:off ";
+            if (gp.temperature) {
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "%g", *gp.temperature);
+                ctl += "t:" + std::string(buf) + " ";
+            }
             live_provider = std::string(pv.wire_format());
             live_model = pv.model();
         }
@@ -3473,7 +3536,11 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             Elements rows;
             for (std::size_t i = 0; i < picker.items.size(); ++i) {
                 Element row = text("  " + picker.items[i] + "  ");
-                if (static_cast<int>(i) == picker.sel) row = row | inverted;
+                // `focus` is what makes the enclosing yframe scroll: without it
+                // the frame stays pinned at the top and a selection past row 17
+                // walks off-screen.
+                if (static_cast<int>(i) == picker.sel)
+                    row = row | inverted | focus;
                 rows.push_back(row);
             }
             if (rows.empty()) rows.push_back(text("  (empty)  ") | dim);
@@ -3482,7 +3549,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                        vbox({vbox(std::move(rows)) | vscroll_indicator | yframe |
                                  size(HEIGHT, LESS_THAN, 18),
                              separator(),
-                             gtext("↑↓ select · Enter choose · Esc cancel") | dim | center})) |
+                             gtext("↑↓/PgUp/PgDn select · Enter choose · "
+                                   "Esc cancel") | dim | center})) |
                 size(WIDTH, LESS_THAN, 100) | clear_under | center;
             return dbox({page | dim, dialog});
         }
@@ -4192,15 +4260,22 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         }
         // While the picker overlay is up, navigate it and swallow other keys.
         if (picker.active) {
-            if (e == Event::ArrowUp) {
+            // One page ≈ the visible rows of the list (HEIGHT < 18 minus the
+            // window chrome).
+            constexpr int kPickerPage = 15;
+            auto move_sel = [&](int delta) {
                 std::lock_guard lk(state_mtx);
-                if (picker.sel > 0) --picker.sel;
-                return true;
-            }
-            if (e == Event::ArrowDown) {
+                const int last = static_cast<int>(picker.items.size()) - 1;
+                picker.sel = std::clamp(picker.sel + delta, 0, std::max(0, last));
+            };
+            if (e == Event::ArrowUp) { move_sel(-1); return true; }
+            if (e == Event::ArrowDown) { move_sel(1); return true; }
+            if (e == Event::PageUp) { move_sel(-kPickerPage); return true; }
+            if (e == Event::PageDown) { move_sel(kPickerPage); return true; }
+            if (e == Event::Home || e == Event::End) {
                 std::lock_guard lk(state_mtx);
-                if (picker.sel + 1 < static_cast<int>(picker.items.size()))
-                    ++picker.sel;
+                const int last = static_cast<int>(picker.items.size()) - 1;
+                picker.sel = (e == Event::Home) ? 0 : std::max(0, last);
                 return true;
             }
             if (e == Event::Return) {

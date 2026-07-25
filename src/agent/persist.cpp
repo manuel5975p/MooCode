@@ -111,6 +111,9 @@ const std::vector<Profile>& builtin_profiles() {
          "https://generativelanguage.googleapis.com/v1beta/openai",
          "gemini-3.5-pro", {"gemini-3.5-pro", "gemini-3.5-flash"}},
         {"grok", "openai", "https://api.x.ai/v1", "grok-4", {"grok-4"}},
+        {"kimi", "openai", "https://api.kimi.com/coding/v1", "kimi-k3",
+         {"kimi-k3", "kimi-k2"}, {}, -1, false, "enabled",
+         1.0},  // the coding endpoint accepts only temperature=1
     };
     return p;
 }
@@ -171,6 +174,7 @@ Settings load_settings(const std::string& home) {
             if (auto v = (*pt)["thinking"].value<bool>()) p.thinking = *v ? 1 : 0;
             if (auto v = (*pt)["drop_thinking_tag"].value<bool>()) p.drop_thinking_tag = *v;
             if (auto v = (*pt)["thinking_type"].value<std::string>()) p.thinking_type = *v;
+            if (auto v = (*pt)["temperature"].value<double>()) p.temperature = *v;
             if (const toml::array* arr = (*pt)["models"].as_array())
                 for (const toml::node& n : *arr)
                     if (auto v = n.value<std::string>()) p.models.push_back(*v);
@@ -259,6 +263,7 @@ void save_settings(const std::string& home, const Settings& s) {
             if (p->drop_thinking_tag) pt.insert("drop_thinking_tag", true);
             if (!p->thinking_type.empty() && p->thinking_type != "enabled")
                 pt.insert("thinking_type", p->thinking_type);
+            if (p->temperature >= 0) pt.insert("temperature", p->temperature);
             if (!p->models.empty()) {
                 toml::array arr;
                 for (const std::string& m : p->models) arr.push_back(m);

@@ -39,7 +39,8 @@ struct GeminiConfig {
     std::string base_url;  // e.g. "https://generativelanguage.googleapis.com/v1beta"
     std::string api_key;   // sent as "x-goog-api-key: <key>"
     std::string model;     // e.g. "gemini-3.5-flash"
-    double temperature = 0.0;
+    // Opt-in: unset => the key is omitted and the server default applies.
+    std::optional<double> temperature;
     long timeout_secs = 0;  // <= 0: no overall transfer cap (only connect setup)
     // Optional generation controls (opt-in; omitted from the request unless set).
     std::string reasoning_effort;  // "low"/"medium"/"high"; "" => omit thinkingConfig

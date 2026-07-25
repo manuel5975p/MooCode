@@ -1,9 +1,13 @@
 // Tests for the pure syntax highlighter: language-tag mapping plus per-line
-// tokenisation for bash, python and cpp, including multi-line lexer state.
+// tokenisation for bash, python and cpp, including multi-line lexer state — and
+// the theme name↔id mapping this library also owns (both frontends resolve
+// settings.theme through it).
 
 #include "agent/syntax_highlight.hpp"
 
 #include <string>
+
+#include "agent/types.hpp"  // SyntaxTheme, syntax_theme_*
 
 #include "test_harness.hpp"
 
@@ -114,4 +118,26 @@ TEST("empty input yields a single empty line") {
     auto out = highlight_block("", Language::Cpp);
     CHECK_EQ(out.size(), std::size_t{1});
     CHECK(out[0].empty());
+}
+
+// --- theme names -------------------------------------------------------------
+
+TEST("syntax theme names round-trip through id mapping") {
+    for (const std::string& name : syntax_theme_names()) {
+        auto id = syntax_theme_from_name(name);
+        CHECK(id.has_value());
+        CHECK_EQ(std::string(syntax_theme_name(*id)), name);
+    }
+    // The four expected schemes are present.
+    auto names = syntax_theme_names();
+    CHECK_EQ(names.size(), std::size_t{4});
+    CHECK(syntax_theme_from_name("default").has_value());
+    CHECK(syntax_theme_from_name("none").has_value());
+}
+
+TEST("syntax_theme_from_name is case-insensitive and rejects junk") {
+    CHECK(syntax_theme_from_name("VIVID") == SyntaxTheme::Vivid);
+    CHECK(syntax_theme_from_name("Mono") == SyntaxTheme::Mono);
+    CHECK(syntax_theme_from_name("nope").has_value() == false);
+    CHECK(syntax_theme_from_name("").has_value() == false);
 }

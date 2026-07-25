@@ -136,6 +136,10 @@ std::optional<ProviderPreset> lookup_preset(std::string_view name) {
         return ProviderPreset{.kind = ProviderKind::OpenAI,
             .base_url = "https://generativelanguage.googleapis.com/v1beta/openai",
             .model = "gemini-3.5-flash"};
+    if (n == "kimi")
+        return ProviderPreset{.kind = ProviderKind::OpenAI,
+            .base_url = "https://api.kimi.com/coding/v1",
+            .model = "kimi-k3"};
     return std::nullopt;
 }
 

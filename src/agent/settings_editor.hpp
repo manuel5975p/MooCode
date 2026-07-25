@@ -78,7 +78,7 @@ struct ProfileEditor {
 ProfileEditor profile_editor_build(const std::vector<Profile>& profiles);
 
 // Number of profile detail fields, for rendering loops.
-constexpr int kNumProfileFields = 7;
+constexpr int kNumProfileFields = 8;
 
 // Label for profile detail field index i (0..kNumProfileFields-1).
 std::string profile_field_label(int i);
@@ -91,6 +91,7 @@ constexpr int kPFieldModel    = 3;
 constexpr int kPFieldThinking     = 4;
 constexpr int kPFieldDropThinking = 5;
 constexpr int kPFieldThinkingType = 6;
+constexpr int kPFieldTemperature  = 7;
 
 // Read a profile field value by field index (kPFieldName etc.)
 std::string profile_field_value(const Profile& p, int field_idx);

@@ -28,6 +28,16 @@ TEST("build_chat_request: includes model and temperature") {
     CHECK(req["messages"].is_array());
 }
 
+TEST("build_chat_request: omits temperature when unset") {
+    // Endpoints like Kimi's coding API reject any temperature but one, so an
+    // unset temperature must leave the key out entirely.
+    OpenAiConfig c = cfg();
+    c.temperature.reset();
+    Conversation conv{Message::user("hi")};
+    auto req = build_chat_request(c, conv, {});
+    CHECK(!req.contains("temperature"));
+}
+
 TEST("build_chat_request: maps system and user roles") {
     Conversation c{Message::system("you are x"), Message::user("go")};
     auto req = build_chat_request(cfg(), c, {});

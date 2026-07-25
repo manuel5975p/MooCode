@@ -41,7 +41,7 @@ constexpr int kFieldProfile           = 13;
 // Profile detail fields (inline labels).
 struct ProfileField {
     std::string label;
-    enum { SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking, SThinkingType } kind;
+    enum { SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking, SThinkingType, STemperature } kind;
 };
 const ProfileField kProfileFields[] = {
     {"name",          ProfileField::SName},
@@ -51,6 +51,7 @@ const ProfileField kProfileFields[] = {
     {"thinking",      ProfileField::SThinking},
     {"drop_think",    ProfileField::SDropThinking},
     {"thinking_type", ProfileField::SThinkingType},
+    {"temperature",   ProfileField::STemperature},
 };
 
 // Valid provider kind values.
@@ -178,6 +179,7 @@ void ProfileEditor::begin_edit_profile_field() {
         case ProfileField::SThinking:    edit_buf = (p.thinking < 0) ? "" : (p.thinking > 0 ? "on" : "off"); break;
         case ProfileField::SDropThinking: edit_buf = p.drop_thinking_tag ? "yes" : "no"; break;
         case ProfileField::SThinkingType: edit_buf = p.thinking_type.empty() ? "enabled" : p.thinking_type; break;
+        case ProfileField::STemperature: edit_buf = p.temperature < 0 ? "" : float_str(p.temperature); break;
         }
         edit_field_idx = profile_field_sel;
         profile_edit_text_mode = true;
@@ -207,6 +209,11 @@ void ProfileEditor::commit_profile_field_edit() {
         break;
     case ProfileField::SThinkingType:
         p.thinking_type = edit_buf;
+        break;
+    case ProfileField::STemperature:
+        // Empty / "(unset)" clears the pin; otherwise parse like the global field.
+        if (edit_buf.empty() || edit_buf == "(unset)") p.temperature = -1;
+        else p.temperature = std::strtod(edit_buf.c_str(), nullptr);
         break;
     }
     profile_edit_text_mode = false;
@@ -243,6 +250,7 @@ std::string profile_field_value(const Profile& p, int field_idx) {
         return p.thinking > 0 ? "on" : "off";
     case kPFieldDropThinking: return p.drop_thinking_tag ? "yes" : "no";
     case kPFieldThinkingType: return p.thinking_type.empty() ? "enabled" : p.thinking_type;
+    case kPFieldTemperature: return p.temperature < 0 ? "(unset)" : float_str(p.temperature);
     default:              return {};
     }
 }

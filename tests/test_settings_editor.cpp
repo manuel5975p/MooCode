@@ -635,6 +635,32 @@ TEST("ProfileEditor commit_profile_field_edit") {
     CHECK(pe.dirty);
 }
 
+TEST("profile_field_value: temperature unset shows (unset), set formats float") {
+    Profile p;
+    CHECK_EQ(profile_field_value(p, kPFieldTemperature), std::string{"(unset)"});
+    p.temperature = 1.0;
+    CHECK_EQ(profile_field_value(p, kPFieldTemperature), std::string{"1.0"});
+}
+
+TEST("ProfileEditor temperature field edit cycle: set then clear") {
+    ProfileEditor pe;
+    Profile p;
+    pe.profiles.push_back(p);
+    pe.sel = 0;
+    pe.begin_edit_profile();
+    pe.profile_field_sel = kPFieldTemperature;
+    pe.begin_edit_profile_field();
+    CHECK(pe.edit_buf.empty());  // unset => empty buffer
+    pe.edit_buf = "1";
+    pe.commit_profile_field_edit();
+    CHECK(pe.profiles[0].temperature == 1.0);
+    // Clearing the buffer again returns the pin to unset.
+    pe.begin_edit_profile_field();
+    pe.edit_buf = "";
+    pe.commit_profile_field_edit();
+    CHECK(pe.profiles[0].temperature < 0);
+}
+
 // === Phase 2: validate() ======================================================
 
 TEST("validate empty profile name is error") {

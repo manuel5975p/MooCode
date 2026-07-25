@@ -1,7 +1,11 @@
 #include "agent/syntax_highlight.hpp"
 
 #include <cctype>
+#include <optional>
 #include <unordered_set>
+#include <utility>
+
+#include "agent/types.hpp"  // SyntaxTheme + to_lower, for the theme-name table
 
 namespace moocode {
 namespace {
@@ -345,6 +349,40 @@ std::vector<std::vector<HlSpan>> highlight_block(std::string_view code,
     // already pushed and reset cur to empty).
     if (!em.cur.empty() || em.lines.empty()) em.newline();
     return std::move(em.lines);
+}
+
+// --- syntax theme names -----------------------------------------------------
+// One ordered table is the single source of truth for both directions of the
+// name↔id mapping plus the /theme listing, so the set can never drift. Declared
+// in types.hpp and defined here (not in tui.cpp) because more than one frontend
+// resolves settings.theme: the FTXUI TUI and the Qt GUI both need the mapping,
+// and only agent_syntax is pure enough for both to link.
+namespace {
+constexpr std::pair<SyntaxTheme, std::string_view> kThemeTable[] = {
+    {SyntaxTheme::Default, "default"},
+    {SyntaxTheme::Mono, "mono"},
+    {SyntaxTheme::Vivid, "vivid"},
+    {SyntaxTheme::None, "none"},
+};
+}  // namespace
+
+std::string_view syntax_theme_name(SyntaxTheme t) {
+    for (const auto& [id, name] : kThemeTable)
+        if (id == t) return name;
+    return "default";
+}
+
+std::optional<SyntaxTheme> syntax_theme_from_name(std::string_view name) {
+    const std::string want = to_lower(name);
+    for (const auto& [id, n] : kThemeTable)
+        if (n == want) return id;
+    return std::nullopt;
+}
+
+std::vector<std::string> syntax_theme_names() {
+    std::vector<std::string> names;
+    for (const auto& [id, name] : kThemeTable) names.emplace_back(name);
+    return names;
 }
 
 }  // namespace moocode

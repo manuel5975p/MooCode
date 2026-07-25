@@ -400,6 +400,42 @@ TEST("persist: profiles round-trip with the active selector and models") {
     }
 }
 
+TEST("persist: profile temperature round-trips and is omitted when unset") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.profiles.push_back(Profile{.name = "kimi",
+        .kind = "openai",
+        .base_url = "https://api.kimi.com/coding/v1",
+        .model = "kimi-k3",
+        .models = {"kimi-k3"},
+        .temperature = 1.0});
+    s.profiles.push_back(Profile{.name = "plain",
+        .kind = "openai",
+        .base_url = "https://example.com/v1",
+        .model = "m",
+        .models = {"m"}});  // no temperature pin
+    save_settings(home, s);
+
+    Settings got = load_settings(home);
+    CHECK_EQ(got.profiles.size(), std::size_t{2});
+    if (got.profiles.size() == 2) {
+        // Sorted by name: "kimi" before "plain".
+        CHECK(got.profiles[0].temperature == 1.0);
+        CHECK(got.profiles[1].temperature < 0);  // unset survives as unset
+    }
+}
+
+TEST("persist: builtin kimi profile pins temperature 1") {
+    // api.kimi.com/coding rejects any temperature but 1; the builtin profile
+    // must pin it so it works out of the box.
+    const Profile* kimi = nullptr;
+    for (const Profile& p : builtin_profiles())
+        if (p.name == "kimi") kimi = &p;
+    CHECK(kimi != nullptr);
+    if (kimi) CHECK(kimi->temperature == 1.0);
+}
+
 TEST("persist: profile blacklist round-trips and is omitted when empty") {
     test::TempDir td;
     std::string home = td.path().string();

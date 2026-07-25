@@ -38,7 +38,8 @@ struct ProviderPreset {
 };
 
 // Resolve a preset name (case-insensitive): "minimax", "deepseek"/"deepseek-pro",
-// "deepseek-flash", "gemini"/"google" (native), "gemini-openai" (compat shim).
+// "deepseek-flash", "gemini"/"google" (native), "gemini-openai" (compat shim),
+// "kimi".
 // Returns std::nullopt for non-preset values (openai/anthropic/auto and anything
 // unrecognised), so callers fall back to parse_provider_choice.
 std::optional<ProviderPreset> lookup_preset(std::string_view name);

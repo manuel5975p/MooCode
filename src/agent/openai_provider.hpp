@@ -22,7 +22,10 @@ struct OpenAiConfig {
     std::string base_url;       // e.g. "https://api.minimax.io/v1" (no trailing /)
     std::string api_key;        // sent as "Authorization: Bearer <key>"
     std::string model;          // e.g. "MiniMax-M3"
-    double temperature = 0.0;
+    // Opt-in: unset => the key is omitted and the server default applies. Some
+    // endpoints (e.g. Kimi's coding API) reject any value but one, so sending
+    // an unsolicited 0.0 breaks them.
+    std::optional<double> temperature;
     long timeout_secs = 0;  // <= 0: no overall transfer cap (model may reason
                             // indefinitely); only connection setup stays bounded.
     // Optional generation controls (opt-in; omitted from the request unless set).

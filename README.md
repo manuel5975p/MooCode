@@ -116,6 +116,7 @@ reasoning, `/exit` or Ctrl-C quit.
 | `/continue` | Reload the most recent conversation for this CWD |
 | `/resume` | Pick and reload a saved conversation |
 | `/rewind` | Rewind the current conversation to a chosen turn |
+| `/fork` | Branch off a chosen turn into a new conversation (the original is kept) |
 | `/compact [instructions]` | Summarize the conversation to save context |
 
 ### `@`-mentions
@@ -143,7 +144,7 @@ moocode [options] [prompt]
   --profile <name>       Use a named profile from settings.toml
   --max-tokens <n>       Max output tokens (default 8192)
   -e, --effort <lvl>     Reasoning effort: low | medium | high | none
-  -t, --temperature <f>  Sampling temperature (default 0.0)
+  -t, --temperature <f>  Sampling temperature (unset => omitted from the request)
   --thinking             Force extended thinking ON
   --no-thinking          Force extended thinking OFF
   --rtk                  Force rtk output-compaction ON
@@ -184,7 +185,8 @@ Config precedence: **flags > `LLM_*` env vars > active profile >
 ~/.moo/
   settings.toml       base_url, model, provider, profile, max_iterations, max_tokens,
                       effort, temperature, thinking, rtk, context_window,
-                      allow_read_outside_root, allow_write_outside_root, [profiles.*]
+                      allow_read_outside_root, allow_write_outside_root, theme,
+                      [profiles.*]
   credentials.toml    per-profile API keys  (chmod 0600)
   permissions.toml    always-allowed tool list
   history             input-line history
@@ -234,7 +236,10 @@ All opt-in (nothing is sent on the wire unless explicitly set):
   OpenAI → `reasoning_effort`; Anthropic → thinking budget (1024/2048/8192/24576 tokens).
 - **`--thinking` / `--no-thinking`** / `settings.thinking`: force reasoning on/off.  
   Anthropic: forces `temperature=1` and lifts `max_tokens` above the budget.
-- **`--temperature`** / `settings.temperature`: sampling temperature (≥ 0, default 0.0).
+- **`--temperature`** / `settings.temperature`: sampling temperature (≥ 0).
+  Unset => the key is omitted and the server default applies; a profile can pin
+  it via `[profiles.<name>] temperature = …` (flag > settings > profile). The
+  builtin `kimi` profile pins `1.0`, the only value its endpoint accepts.
 
 A soft warning is emitted when effort/thinking is enabled on an
 OpenAI-compatible model that likely ignores it (heuristic detection).
@@ -347,9 +352,18 @@ agent_core       The agent loop: assemble, dispatch tools, manage history
 agent_question   ask_user tool + QuestionGate
 agent_subagent   spawn_subagent tool
   ↑
+agent_syntax     pure code-block syntax highlighter + the theme-name table
+  ↑
 agent_tui        Full-screen FTXUI TUI (two-pane, streaming, diff rendering)
   ↑
 moocode (main)   CLI entry point: config resolution, tool registration, dispatch
+```
+
+One side target sits beside `moocode`, reusing the layers above and adding
+nothing to them:
+
+```
+listmodels       endpoint probe: agent_provider + agent_persist, no loop/tools/TUI
 ```
 
 ### Error handling

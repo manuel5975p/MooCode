@@ -40,25 +40,8 @@ Message tool_result(std::string id, std::string content, bool failed = false) {
 
 }  // namespace
 
-TEST("syntax theme names round-trip through id mapping") {
-    for (const std::string& name : syntax_theme_names()) {
-        auto id = syntax_theme_from_name(name);
-        CHECK(id.has_value());
-        CHECK_EQ(std::string(syntax_theme_name(*id)), name);
-    }
-    // The four expected schemes are present.
-    auto names = syntax_theme_names();
-    CHECK_EQ(names.size(), std::size_t{4});
-    CHECK(syntax_theme_from_name("default").has_value());
-    CHECK(syntax_theme_from_name("none").has_value());
-}
-
-TEST("syntax_theme_from_name is case-insensitive and rejects junk") {
-    CHECK(syntax_theme_from_name("VIVID") == SyntaxTheme::Vivid);
-    CHECK(syntax_theme_from_name("Mono") == SyntaxTheme::Mono);
-    CHECK(syntax_theme_from_name("nope").has_value() == false);
-    CHECK(syntax_theme_from_name("").has_value() == false);
-}
+// The theme name↔id mapping itself now lives in agent_syntax; its round-trip
+// and case-insensitivity are covered by test_syntax.cpp.
 
 TEST("TuiState defaults to the Default theme and is settable") {
     TuiState s;

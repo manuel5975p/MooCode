@@ -40,6 +40,7 @@ struct Profile {
     int thinking = -1;                // -1 => unset (use global default), 0 => off, 1 => on
     bool drop_thinking_tag = false;   // omit the thinking field entirely (for endpoints that reject it)
     std::string thinking_type = "enabled";  // thinking.type when reasoning is ON ("enabled" DeepSeek, "adaptive" MiniMax)
+    double temperature = -1;  // < 0 => unset (omit from requests); pin e.g. 1 for endpoints that reject other values
 };
 
 // Built-in profiles matching the former hardcoded model_registry, used when no

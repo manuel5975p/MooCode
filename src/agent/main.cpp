@@ -275,7 +275,7 @@ po::parser make_parser() {
         "Reasoning effort: low | medium | high | none "
         "(OpenAI reasoning_effort; Anthropic thinking budget)");
     p["temperature"].abbreviation('t').type(po::f64).description(
-        "Sampling temperature (default 0.0; forced to 1.0 when thinking is on)");
+        "Sampling temperature (unset => omitted; forced to 1.0 when thinking is on)");
     p["thinking"].description("Force extended thinking / reasoning ON");
     p["no-thinking"].description("Force extended thinking / reasoning OFF");
     p["rtk"].description("Force rtk output-compaction ON (rewrite simple bash commands to `rtk <cmd>`)");
@@ -794,6 +794,11 @@ int main(int argc, char** argv) {
         gp.temperature = cli["temperature"].get().f64;
     else if (settings.temperature >= 0)
         gp.temperature = settings.temperature;
+    // Profile temperature: the active profile's pinned value is the default
+    // when neither the flag nor global settings set one (mirrors profile
+    // thinking). Unset everywhere => the key is omitted from the request.
+    if (!gp.temperature.has_value() && profile && profile->temperature >= 0)
+        gp.temperature = profile->temperature;
     if (cli["thinking"].was_set())
         gp.thinking = true;  // explicit flags win over effort/settings
     else if (cli["no-thinking"].was_set())

@@ -134,3 +134,10 @@ target_include_directories(moocode PRIVATE ${PROJECT_SOURCE_DIR})
 # the transitively-linked archives again makes the linker warn about (and ignore)
 # duplicate libraries.
 target_link_libraries(moocode PRIVATE agent_tui agent_search agent_gitea agent_git agent_subagent agent_lsp agent_question agent_onboarding)
+
+# --- listmodels: standalone endpoint probe ----------------------------------
+# Lists what an endpoint advertises via Provider::list_models(). Needs only the
+# provider backends and the ~/.moo store — no agent loop, tools or TUI.
+add_executable(listmodels agent/listmodels.cpp)
+target_include_directories(listmodels PRIVATE ${PROJECT_SOURCE_DIR})
+target_link_libraries(listmodels PRIVATE agent_provider agent_persist)

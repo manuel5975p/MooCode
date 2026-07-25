@@ -107,6 +107,14 @@ TEST("build_generate_request: system => systemInstruction, user => contents") {
     CHECK(!req["generationConfig"].contains("maxOutputTokens"));
 }
 
+TEST("build_generate_request: omits temperature when unset") {
+    GeminiConfig c = cfg();
+    c.temperature.reset();
+    Conversation conv{Message::user("hi")};
+    auto req = build_generate_request(c, conv, {});
+    CHECK(!req["generationConfig"].contains("temperature"));
+}
+
 TEST("build_generate_request: multiple system messages concatenated") {
     Conversation c{Message::system("a"), Message::system("b"), Message::user("hi")};
     auto req = build_generate_request(cfg(), c, {});
