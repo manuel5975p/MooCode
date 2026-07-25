@@ -119,6 +119,65 @@ reasoning, `/exit` or Ctrl-C quit.
 | `/fork` | Branch off a chosen turn into a new conversation (the original is kept) |
 | `/compact [instructions]` | Summarize the conversation to save context |
 
+### Qt GUI (`moogui`)
+
+A second, standalone frontend: a desktop chat window with proper Markdown
+rendering. Off by default so the normal build never needs Qt.
+
+```sh
+cmake -S . -B build-gui -G Ninja -DMOOCODE_GUI=ON
+cmake --build build-gui
+./build-gui/src/moogui
+```
+
+Requires Qt 6 (Widgets only — no Qt Network; HTTP still goes through libcurl).
+It reads and writes the same `~/.moo/settings.toml` as the TUI, so the active
+profile, model and theme are shared between them, and finished turns are
+autosaved to `~/.moo/conversations/`.
+
+- **Markdown** — headings, bold/italic/strikethrough, inline code, nested
+  ordered and unordered lists, task lists, blockquotes, tables, links and
+  horizontal rules. Fenced code blocks keep moocode's own syntax highlighting
+  (bash/python/cpp), so they look the same as in the TUI.
+- **Settings dropdown** — the GUI's equivalent of the slash commands, written
+  back to `settings.toml`:
+  - **Profile / Model** — switch endpoint or model. The model list comes from
+    the profile's `models`, plus **Detect from endpoint…** (asks the endpoint
+    what it serves, honouring the profile's `blacklist`, and saves the result
+    into a configured profile) and **Enter model id…** for anything else. Works
+    even for a profile that declares no models.
+  - **Effort / Thinking / Temperature** — the generation controls. Each is
+    fully reversible: "none" and "backend default" really do clear.
+  - **Appearance** — theme, interface font, code font, and text size.
+- **Themes** — the same four schemes the TUI's `/theme` offers (`default`,
+  `mono`, `vivid`, `none`), extended from code colours to the full window.
+- **Fonts** — interface and code faces are chosen separately (the code picker
+  is restricted to monospaced families) with Larger/Smaller/Reset text size.
+  Stored in a `[gui]` table in `settings.toml`:
+
+  ```toml
+  [gui]
+  font = "Inter"
+  font_size = 13
+  mono_font = "JetBrains Mono"
+  mono_font_size = 12
+  ```
+
+  Every key is optional; unset means the platform default, and an unset code
+  size tracks the interface size. The CLI and TUI ignore the table but preserve
+  it, so their writes never clobber it.
+- **Composer** — Enter sends, Shift+Enter inserts a newline, Stop aborts the
+  in-flight turn.
+
+Flags: `--profile`, `--model`, `--base-url`, `--api-key`, `--provider`,
+`--system`; connection resolution is identical to the CLI's.
+
+**Chat only.** The GUI runs the agent with tools switched off
+(`advertise_tools = false`, empty registry), so the model is never told about
+tools and cannot call one. There is no approval modal in the GUI yet, and
+running shell commands with no gate would be worse than not offering them; use
+the TUI for tool-using work.
+
 ### `@`-mentions
 
 Type `@path` in your prompt to auto-attach file contents:
@@ -186,7 +245,7 @@ Config precedence: **flags > `LLM_*` env vars > active profile >
   settings.toml       base_url, model, provider, profile, max_iterations, max_tokens,
                       effort, temperature, thinking, rtk, context_window,
                       allow_read_outside_root, allow_write_outside_root, theme,
-                      [profiles.*]
+                      [profiles.*], [gui] (moogui fonts)
   credentials.toml    per-profile API keys  (chmod 0600)
   permissions.toml    always-allowed tool list
   history             input-line history
@@ -359,11 +418,14 @@ agent_tui        Full-screen FTXUI TUI (two-pane, streaming, diff rendering)
 moocode (main)   CLI entry point: config resolution, tool registration, dispatch
 ```
 
-One side target sits beside `moocode`, reusing the layers above and adding
+Two side targets sit beside `moocode`, each reusing the layers above and adding
 nothing to them:
 
 ```
 listmodels       endpoint probe: agent_provider + agent_persist, no loop/tools/TUI
+moogui           Qt6 chat window (src/gui/, -DMOOCODE_GUI=ON). Qt is confined
+                 there exactly as toml++ is confined to persist.cpp; the colour
+                 layer (moogui_theme) is Qt-free and unit-tested.
 ```
 
 ### Error handling

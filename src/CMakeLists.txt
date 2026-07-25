@@ -141,3 +141,36 @@ target_link_libraries(moocode PRIVATE agent_tui agent_search agent_gitea agent_g
 add_executable(listmodels agent/listmodels.cpp)
 target_include_directories(listmodels PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(listmodels PRIVATE agent_provider agent_persist)
+
+# --- moogui_theme: the GUI's colour layer (pure; no Qt) ----------------------
+# Built unconditionally even though only moogui consumes it: it is Qt-free by
+# construction, and keeping it out of the MOOCODE_GUI guard means test_gui_theme
+# runs in every preset, including the sanitizer ones, on machines without Qt.
+add_library(moogui_theme STATIC gui/theme.cpp)
+target_include_directories(moogui_theme PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(moogui_theme PUBLIC agent_types agent_syntax)
+
+# --- moogui: the Qt6 chat window --------------------------------------------
+# A second frontend beside the FTXUI TUI, sharing everything below agent_tui
+# (the agent loop, the providers, ~/.moo and the syntax highlighter) and none of
+# its rendering. Qt is confined to src/gui/, the way toml.hpp is confined to
+# persist.cpp — no agent_* target gains a Qt dependency.
+#
+# Off by default: the dev/asan/tsan presets and every existing build must keep
+# working on a machine with no Qt installed. Enable with -DMOOCODE_GUI=ON.
+#
+# Deliberately no Qt6::Network — all HTTP goes through agent_http/libcurl, so
+# the bundled static OpenSSL never meets a second TLS stack.
+option(MOOCODE_GUI "Build the Qt6 chat GUI (moogui)" OFF)
+if(MOOCODE_GUI)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets)
+  add_executable(moogui gui/main.cpp gui/main_window.cpp gui/chat_panel.cpp
+                        gui/markdown_view.cpp gui/agent_bridge.cpp
+                        gui/settings_menu.cpp gui/moogui.qrc)
+  # Per-target rather than the global CMAKE_AUTOMOC, so no agent_* target pays
+  # the moc scan.
+  set_target_properties(moogui PROPERTIES AUTOMOC ON AUTORCC ON)
+  target_include_directories(moogui PRIVATE ${PROJECT_SOURCE_DIR})
+  target_link_libraries(moogui PRIVATE agent_core agent_provider agent_persist
+                                       agent_syntax moogui_theme Qt6::Widgets)
+endif()

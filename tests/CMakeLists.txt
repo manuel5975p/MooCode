@@ -54,6 +54,10 @@ moocode_add_test(test_rtk test_rtk.cpp agent_rtk)
 moocode_add_test(test_types test_types.cpp agent_types)
 moocode_add_test(test_diff test_diff.cpp agent_diff)
 moocode_add_test(test_syntax test_syntax.cpp agent_syntax)
+
+# test_gui_theme: the Qt GUI's colour layer. Needs no Qt and no display —
+# moogui_theme is pure by design — so it runs even when MOOCODE_GUI is off.
+moocode_add_test(test_gui_theme test_gui_theme.cpp moogui_theme)
 moocode_add_test(test_persist test_persist.cpp agent_persist agent_types)
 set_tests_properties(test_persist PROPERTIES TIMEOUT 30)
 

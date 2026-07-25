@@ -160,6 +160,20 @@ Settings load_settings(const std::string& home) {
     if (auto v = t["theme"].value<std::string>()) s.theme = *v;
     if (auto v = t["profile"].value<std::string>()) s.profile = *v;
 
+    // [gui]: Qt-frontend appearance. Loaded (and re-saved) unconditionally so a
+    // CLI or TUI write never drops the GUI's settings.
+    if (const toml::table* g = t["gui"].as_table()) {
+        if (auto v = (*g)["font"].value<std::string>()) s.gui.font = *v;
+        if (auto v = (*g)["font_size"].value<int64_t>())
+            s.gui.font_size = static_cast<int>(*v);
+        if (auto v = (*g)["mono_font"].value<std::string>()) s.gui.mono_font = *v;
+        if (auto v = (*g)["mono_font_size"].value<int64_t>())
+            s.gui.mono_font_size = static_cast<int>(*v);
+        if (auto v = (*g)["chat_font"].value<std::string>()) s.gui.chat_font = *v;
+        if (auto v = (*g)["chat_font_size"].value<int64_t>())
+            s.gui.chat_font_size = static_cast<int>(*v);
+    }
+
     // [profiles.<name>] sub-tables: one Profile each. Sorted by name on emit so
     // the file order is deterministic regardless of toml++'s internal ordering.
     if (const toml::table* profs = t["profiles"].as_table()) {
@@ -243,6 +257,21 @@ void save_settings(const std::string& home, const Settings& s) {
         t.insert("allow_write_outside_root", s.allow_write_outside_root != 0);
     if (!s.theme.empty()) t.insert("theme", s.theme);
     if (!s.profile.empty()) t.insert("profile", s.profile);
+
+    // [gui]: emitted only when something is set, so a TUI-only user's
+    // settings.toml never grows an empty table it did not ask for.
+    {
+        toml::table g;
+        if (!s.gui.font.empty()) g.insert("font", s.gui.font);
+        if (s.gui.font_size > 0) g.insert("font_size", int64_t(s.gui.font_size));
+        if (!s.gui.mono_font.empty()) g.insert("mono_font", s.gui.mono_font);
+        if (s.gui.mono_font_size > 0)
+            g.insert("mono_font_size", int64_t(s.gui.mono_font_size));
+        if (!s.gui.chat_font.empty()) g.insert("chat_font", s.gui.chat_font);
+        if (s.gui.chat_font_size > 0)
+            g.insert("chat_font_size", int64_t(s.gui.chat_font_size));
+        if (!g.empty()) t.insert("gui", std::move(g));
+    }
 
     // [profiles.*] tables, sorted by name for a deterministic file. api_key is
     // never written here — secrets live only in credentials.toml.

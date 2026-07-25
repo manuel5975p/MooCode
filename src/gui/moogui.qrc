@@ -1,0 +1,16 @@
+<!DOCTYPE RCC>
+<!-- The window/taskbar icon, embedded so the binary stays self-contained (the
+     logo lives at the project root and is shared with the README), and the
+     prose typeface, embedded for the same reason: EB Garamond is the window's
+     default face, and a default that depends on the machine having the font
+     installed is not a default. OFL 1.1 — the licence travels with the files
+     in fonts/OFL.txt. -->
+<RCC version="1.0">
+  <qresource prefix="/">
+    <file alias="moocode.jpg">../../moocodeLogo.jpg</file>
+    <file alias="fonts/EBGaramond-Regular.ttf">fonts/EBGaramond-Regular.ttf</file>
+    <file alias="fonts/EBGaramond-Italic.ttf">fonts/EBGaramond-Italic.ttf</file>
+    <file alias="fonts/EBGaramond-SemiBold.ttf">fonts/EBGaramond-SemiBold.ttf</file>
+    <file alias="fonts/EBGaramond-SemiBoldItalic.ttf">fonts/EBGaramond-SemiBoldItalic.ttf</file>
+  </qresource>
+</RCC>

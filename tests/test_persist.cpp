@@ -338,6 +338,66 @@ TEST("settings_rtk_roundtrip") {
     CHECK_EQ(load_settings(home).rtk, -1);
 }
 
+TEST("settings [gui] font block round-trips") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.gui.font = "Inter";
+    s.gui.font_size = 13;
+    s.gui.mono_font = "JetBrains Mono";
+    s.gui.mono_font_size = 12;
+    s.gui.chat_font = "EB Garamond";
+    s.gui.chat_font_size = 17;
+    save_settings(home, s);
+
+    Settings got = load_settings(home);
+    CHECK_EQ(got.gui.font, std::string("Inter"));
+    CHECK_EQ(got.gui.font_size, 13);
+    CHECK_EQ(got.gui.mono_font, std::string("JetBrains Mono"));
+    CHECK_EQ(got.gui.mono_font_size, 12);
+    CHECK_EQ(got.gui.chat_font, std::string("EB Garamond"));
+    CHECK_EQ(got.gui.chat_font_size, 17);
+}
+
+TEST("settings [gui] table is omitted entirely when unset") {
+    // A TUI-only user's settings.toml must not sprout a GUI section it never
+    // asked for; unset must also survive the round-trip as unset.
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.model = "some-model";
+    save_settings(home, s);
+
+    CHECK(td.read("settings.toml").find("[gui]") == std::string::npos);
+    Settings got = load_settings(home);
+    CHECK(got.gui.font.empty());
+    CHECK_EQ(got.gui.font_size, 0);
+    CHECK(got.gui.mono_font.empty());
+    CHECK_EQ(got.gui.mono_font_size, 0);
+    CHECK(got.gui.chat_font.empty());
+    CHECK_EQ(got.gui.chat_font_size, 0);
+}
+
+TEST("settings [gui] survives a save by a frontend that ignores it") {
+    // The CLI and TUI never touch [gui], but they do load-modify-save the whole
+    // Settings; the GUI's fonts must not be collateral damage.
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    s.gui.font = "Inter";
+    s.gui.mono_font_size = 11;
+    save_settings(home, s);
+
+    Settings reloaded = load_settings(home);   // e.g. the TUI opening /settings
+    reloaded.effort = "high";                  // changing something unrelated
+    save_settings(home, reloaded);
+
+    Settings got = load_settings(home);
+    CHECK_EQ(got.effort, std::string("high"));
+    CHECK_EQ(got.gui.font, std::string("Inter"));
+    CHECK_EQ(got.gui.mono_font_size, 11);
+}
+
 TEST("persist: settings missing file gives defaults") {
     test::TempDir td;
     Settings got = load_settings(td.path().string());

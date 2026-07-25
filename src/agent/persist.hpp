@@ -56,6 +56,20 @@ std::vector<std::string> filter_blacklisted(
     const std::vector<std::string>& models,
     const std::vector<std::string>& blacklist);
 
+// Appearance settings for the Qt GUI, persisted as a [gui] table. Kept in the
+// one ~/.moo store rather than a Qt-side config file so moocode still has a
+// single source of configuration, and namespaced under [gui] because — unlike
+// `theme`, which both frontends honour — these mean nothing to the TUI. Empty
+// / zero everywhere means "unset": use the platform default.
+struct GuiSettings {
+    std::string font;        // interface font family; empty => system default
+    int font_size = 0;       // point size; 0 => system default
+    std::string mono_font;   // code/fenced-block family; empty => system fixed
+    int mono_font_size = 0;  // point size; 0 => derived from font_size
+    std::string chat_font;   // transcript prose family; empty => follow `font`
+    int chat_font_size = 0;  // point size; 0 => follow `font_size`
+};
+
 // Configuration persisted in settings.toml. An empty string / zero means "not
 // set in the file" so callers can layer it under env/flag overrides.
 struct Settings {
@@ -83,6 +97,9 @@ struct Settings {
     // request (backends that reject it; see ModelEndpoint). Empty when
     // unconfigured. Order preserved from file.
     std::vector<ModelEndpoint> drop_reasoning_effort;
+    // [gui] table: appearance for the Qt frontend. Ignored by the CLI and TUI,
+    // but round-tripped by them so neither erases it on save.
+    GuiSettings gui;
 };
 
 // Load settings.toml (missing or malformed => default-constructed, never errors).
