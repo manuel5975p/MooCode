@@ -202,6 +202,20 @@ std::string window_stylesheet(const GuiTheme& th) {
          th.accent_text + "; }\n";
     s += "#mooInput:focus { border: 1px solid " + th.accent + "; }\n";
 
+    // Staged-image chips above the composer, and the thumbnails a sent message
+    // keeps. Both read as part of the surface they sit on rather than as
+    // controls, so only the remove button gets a hover state.
+    s += "#mooAttachStrip { background: transparent; }\n";
+    s += "#mooAttachChip { background: " + th.user_bubble_bg +
+         "; border: 1px solid " + th.border + "; border-radius: 8px; }\n";
+    s += "#mooAttachName { background: transparent; color: " + th.muted +
+         "; }\n";
+    s += "#mooAttachRemove { background: transparent; border: none; color: " +
+         th.muted + "; padding: 0 2px; }\n";
+    s += "#mooAttachRemove:hover { color: " + th.code_variable + "; }\n";
+    s += "#mooThumb { background: transparent; border: 1px solid " + th.border +
+         "; border-radius: 6px; }\n";
+
     s += "QPushButton { background: " + th.user_bubble_bg + "; color: " + th.text +
          "; border: 1px solid " + th.border +
          "; border-radius: 8px; padding: 6px 14px; }\n";

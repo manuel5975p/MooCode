@@ -79,6 +79,9 @@ LLM_API_KEY=sk-ant-... ./build/src/moocode -m claude-sonnet-4-6 "hi"
 ./build/src/moocode -p minimax        -k ... "hi"   # MiniMax-M3
 ./build/src/moocode -p deepseek-pro   -k ... "hi"   # deepseek-v4-pro
 ./build/src/moocode -p deepseek-flash -k ... "hi"   # deepseek-v4-flash
+
+# Or a settings.toml profile, which also supplies the stored credential
+./build/src/moocode --profile deepseek "hi"
 ```
 
 ### Interactive TUI
@@ -148,26 +151,45 @@ autosaved to `~/.moo/conversations/`.
     even for a profile that declares no models.
   - **Effort / Thinking / Temperature** — the generation controls. Each is
     fully reversible: "none" and "backend default" really do clear.
-  - **Appearance** — theme, interface font, code font, and text size.
+  - **Appearance** — theme, the three font slots, and text size.
 - **Themes** — the same four schemes the TUI's `/theme` offers (`default`,
   `mono`, `vivid`, `none`), extended from code colours to the full window.
-- **Fonts** — interface and code faces are chosen separately (the code picker
-  is restricted to monospaced families) with Larger/Smaller/Reset text size.
-  Stored in a `[gui]` table in `settings.toml`:
+- **Fonts** — three slots, each chosen separately, with Larger/Smaller/Reset
+  text size. **Interface** is the whole window; **chat** is the transcript
+  alone, so the messages can differ from the chrome; **code** covers fenced and
+  inline code and its picker is restricted to monospaced families. Stored in a
+  `[gui]` table in `settings.toml`:
 
   ```toml
   [gui]
   font = "Inter"
   font_size = 13
+  chat_font = "EB Garamond"
+  chat_font_size = 17
   mono_font = "JetBrains Mono"
   mono_font_size = 12
   ```
 
-  Every key is optional; unset means the platform default, and an unset code
-  size tracks the interface size. The CLI and TUI ignore the table but preserve
-  it, so their writes never clobber it.
+  Every key is optional and falls back to the slot before it: an unset chat
+  font follows the interface font, and an unset code size tracks the chat size.
+  The prose default is **EB Garamond**, embedded in the binary from
+  `src/gui/fonts/` under the OFL — so the default face does not depend on the
+  machine having a font installed. The CLI and TUI ignore the table but
+  preserve it, so their writes never clobber it.
 - **Composer** — Enter sends, Shift+Enter inserts a newline, Stop aborts the
   in-flight turn.
+- **Images** — Ctrl+V attaches a clipboard image (a screenshot, or a picture
+  copied from a browser or file manager) instead of pasting it as text, and
+  dropping image files on the composer does the same. Each one is staged as a
+  chip above the input — thumbnail, name, ✕ to detach — and up to eight ride
+  the next turn as multimodal content, with the thumbnails kept in the
+  transcript. Dropped files are sent exactly as they are on disk; a pasted
+  bitmap is capped at 1568px on its long edge, since nothing reads a 4K
+  screenshot at full size and some endpoints refuse it. When the clipboard also
+  offers the original PNG/JPEG/WebP bytes and no rescale is needed, those go out
+  untouched. The image bytes are not written to the conversation file, so a
+  resumed transcript keeps the prose and the `[image #N]` references but not the
+  pictures. Right-click ▸ Paste still pastes text, whatever the clipboard holds.
 
 Flags: `--profile`, `--model`, `--base-url`, `--api-key`, `--provider`,
 `--system`; connection resolution is identical to the CLI's.
@@ -237,6 +259,7 @@ Config precedence: **flags > `LLM_*` env vars > active profile >
 | `CLANGD_COMPILE_COMMANDS_DIR` | compile_commands.json location | `<root>/build` or `<root>` |
 | `CLANGD_INDEX_WAIT_MS` | Wait for clangd index on `rename` | `0` (don't block) |
 | `MOOCODE_LSP_DEBUG` | Trace LSP messages to stderr | — |
+| `MOOCODE_TRACE_STREAM` | Diagnose a frozen response: `1`/`stderr`, or a file path to append to | off |
 
 ### Persistent state (`~/.moo/`)
 
@@ -425,7 +448,9 @@ nothing to them:
 listmodels       endpoint probe: agent_provider + agent_persist, no loop/tools/TUI
 moogui           Qt6 chat window (src/gui/, -DMOOCODE_GUI=ON). Qt is confined
                  there exactly as toml++ is confined to persist.cpp; the colour
-                 layer (moogui_theme) is Qt-free and unit-tested.
+                 layer (moogui_theme) and the conversation fold
+                 (moogui_convimport) are Qt-free and unit-tested, and the
+                 clipboard/drop image encoder (moogui_attach) is tested headless.
 ```
 
 ### Error handling
@@ -461,6 +486,41 @@ fed back to the model so it can self-correct.
 - **TUI:** answer deltas → chat pane, reasoning → collapsible blocks,
   tool calls → activity feed (results uniformly middle-elided to first 73 +
   `...` + last 73 bytes when over 150), diffs → inline colored + context-elided.
+
+### Diagnosing a frozen response
+
+When a response stops mid-answer, the two candidates are "the endpoint went
+silent" and "the frontend is too busy re-rendering to repaint". Set
+`MOOCODE_TRACE_STREAM` to a file and reproduce; both write there. Use a file
+rather than `1` for the TUI (stderr is the screen it draws on) and for a GUI
+started from a launcher (nobody sees its stderr):
+
+```sh
+MOOCODE_TRACE_STREAM=/tmp/moo-trace.log moogui
+tail -f /tmp/moo-trace.log
+```
+
+```
+[moo     0.000] stream: POST https://…/chat/completions body=14152 bytes
+[moo    10.210] stream: silent for 10.009s (2 chunks, 123 bytes so far)
+[moo    20.220] stream: silent for 20.019s (2 chunks, 123 bytes so far)
+```
+
+- **`silent for …` lines piling up** — nothing is arriving. The stream is not
+  bounded by a read timeout (`timeout_secs = 0`, so only connect is capped), and
+  cancellation is only checked when a byte arrives, so Stop/Esc cannot end it
+  either: the process has to be killed. `connection=reused` on the closing
+  summary line points at a stale pooled keep-alive connection; `connection=new`
+  at the endpoint itself.
+- **`chat: flush …ms` lines, or a large `turn rendered` total** — the GUI is
+  spending the turn re-parsing the answer, which grows with its length. The
+  answer is still arriving; the window just cannot keep up.
+- **`gui: run() returned …`** — the turn ended and the UI knows. A freeze with
+  this line present is not a hung request.
+
+The trace records sizes, counts and timings only — never headers (they carry the
+API key), request bodies, or message content — so a trace file is safe to attach
+to a bug report.
 
 ## Testing
 

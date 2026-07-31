@@ -35,7 +35,10 @@ po::parser make_parser() {
         "API key (overrides the profile's stored key; else LLM_API_KEY)");
     p["provider"].abbreviation('p').type(po::string).description(
         "Wire format: openai | anthropic | gemini | auto (default auto)");
-    p["system"].type(po::string).description("System prompt (default: none)");
+    p["system"].type(po::string).description(
+        "System prompt (default: the one saved under [gui] in settings.toml)");
+    p["continue"].abbreviation('c').description(
+        "Open the most recent conversation saved in this directory");
     p["help"].abbreviation('h').description("Show this help");
     return p;
 }
@@ -71,10 +74,13 @@ int main(int argc, char** argv) {
         std::printf(
             "moogui — a chat window onto moocode\n\n"
             "usage: moogui [--profile <name>] [--model <id>] [--base-url URL]\n"
-            "              [--api-key KEY] [--provider KIND] [--system TEXT]\n\n"
+            "              [--api-key KEY] [--provider KIND] [--system TEXT]\n"
+            "              [--continue]\n\n"
             "With no arguments, uses the active profile from settings.toml, else\n"
             "LLM_BASE_URL/LLM_API_KEY. Settings changed in the window are written\n"
-            "back to settings.toml and shared with the moocode TUI.\n");
+            "back to settings.toml and shared with the moocode TUI. Conversations\n"
+            "are stored in the same place as the TUI's, so either frontend can\n"
+            "resume the other's — see the Chats menu.\n");
         return 0;
     }
 
@@ -158,13 +164,21 @@ int main(int argc, char** argv) {
     state.temperature = gp.temperature;
     if (auto t = syntax_theme_from_name(settings.theme)) state.theme = *t;
     state.fonts = settings.gui;
+    // --system overrides the saved prompt for this run only: it is not written
+    // back, so a one-off experiment does not become the default.
+    const std::string system_prompt = cli["system"].was_set()
+                                          ? cli["system"].get().string
+                                          : settings.gui.system_prompt;
+    state.system_prompt = system_prompt;
+    const bool want_continue = cli["continue"].was_set();
 
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("moocode"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/moocode.jpg")));
 
     gui::MainWindow w(home, std::move(settings), std::move(conn), std::move(gp),
-                      std::move(state), flag(cli, "system"));
+                      std::move(state), system_prompt);
     w.show();
+    if (want_continue) w.continueLastConversation();
     return app.exec();
 }

@@ -172,6 +172,8 @@ Settings load_settings(const std::string& home) {
         if (auto v = (*g)["chat_font"].value<std::string>()) s.gui.chat_font = *v;
         if (auto v = (*g)["chat_font_size"].value<int64_t>())
             s.gui.chat_font_size = static_cast<int>(*v);
+        if (auto v = (*g)["system_prompt"].value<std::string>())
+            s.gui.system_prompt = *v;
     }
 
     // [profiles.<name>] sub-tables: one Profile each. Sorted by name on emit so
@@ -270,6 +272,8 @@ void save_settings(const std::string& home, const Settings& s) {
         if (!s.gui.chat_font.empty()) g.insert("chat_font", s.gui.chat_font);
         if (s.gui.chat_font_size > 0)
             g.insert("chat_font_size", int64_t(s.gui.chat_font_size));
+        if (!s.gui.system_prompt.empty())
+            g.insert("system_prompt", s.gui.system_prompt);
         if (!g.empty()) t.insert("gui", std::move(g));
     }
 

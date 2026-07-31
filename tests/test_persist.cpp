@@ -338,6 +338,17 @@ TEST("settings_rtk_roundtrip") {
     CHECK_EQ(load_settings(home).rtk, -1);
 }
 
+TEST("settings [gui] system_prompt round-trips, multi-line and all") {
+    test::TempDir td;
+    std::string home = td.path().string();
+    Settings s;
+    const std::string prompt = "You are a rubber duck.\n\nSpeak in \"quotes\".";
+    s.gui.system_prompt = prompt;
+    save_settings(home, s);
+
+    CHECK_EQ(load_settings(home).gui.system_prompt, prompt);
+}
+
 TEST("settings [gui] font block round-trips") {
     test::TempDir td;
     std::string home = td.path().string();

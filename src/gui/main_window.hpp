@@ -16,9 +16,14 @@
 
 #include "agent/persist.hpp"
 #include "agent/provider_factory.hpp"
+#include "gui/image_attach.hpp"
 #include "gui/settings_menu.hpp"
 
+class QAction;
+class QHBoxLayout;
 class QLabel;
+class QMenu;
+class QMimeData;
 class QPlainTextEdit;
 class QPushButton;
 class QToolButton;
@@ -38,6 +43,10 @@ public:
                std::string system_prompt, QWidget* parent = nullptr);
     ~MainWindow() override;
 
+    // Open the most recent conversation saved in the working directory (the
+    // --continue flag). Returns false when there is none.
+    bool continueLastConversation();
+
 protected:
     bool eventFilter(QObject* obj, QEvent* e) override;
     void closeEvent(QCloseEvent* e) override;
@@ -56,8 +65,29 @@ private slots:
     void onTextSizeStep(int delta);
     void onModelsRequested();
     void onModelsDetected(const QStringList& models);
+    void onSystemPromptChanged();
+    void onNewConversation();
+    void onBrowseConversations();
 
 private:
+    // Rebuilt on every show, so a conversation saved by the TUI in another
+    // window appears without restarting.
+    void rebuildConversationsMenu();
+    // Adopt a saved conversation: hand its history to the agent and repaint the
+    // transcript from it. Reports failures into the transcript, never a dialog.
+    void openConversation(const std::string& path);
+    // Repaint the transcript from `conv` (no history change).
+    void renderConversation(const Conversation& conv);
+
+    // Stage every image in `md` (a clipboard paste or a drop) on the composer,
+    // reporting whatever could not be read into the transcript.
+    void attachFromMime(const QMimeData* md);
+    // Repaint the row of staged-image chips; hides it when nothing is staged.
+    void rebuildAttachStrip();
+    // Drop every staged image. Ids restart, so the "[image #N]" references a
+    // turn sends are numbered from one within that turn.
+    void clearAttachments();
+
     void applyTheme();
     void applyFonts();
     void syncInputHeight();
@@ -87,9 +117,24 @@ private:
     QLabel* chip_ = nullptr;
     QLabel* status_ = nullptr;
     QToolButton* settings_button_ = nullptr;
+    QToolButton* conversations_button_ = nullptr;
+    QMenu* conversations_menu_ = nullptr;
+    // Owned by the window, not by the menu it appears in: a QAction only reaches
+    // its shortcut from a widget that is actually shown, and a popup menu is not
+    // one until it pops up. QMenu::clear() leaves a foreign-parented action
+    // alone, so the rebuild can keep re-adding this one.
+    QAction* new_conversation_ = nullptr;
     QPlainTextEdit* input_ = nullptr;
     QPushButton* send_ = nullptr;
     QPushButton* stop_ = nullptr;
+
+    // Images pasted or dropped onto the composer, waiting for the turn that
+    // will carry them. The chip strip above the input is their only handle —
+    // unlike the TUI, where the handle is an `[img#N]` marker inside the text.
+    QWidget* attach_strip_ = nullptr;
+    QHBoxLayout* attach_box_ = nullptr;
+    std::vector<StagedImage> attachments_;
+    int next_attach_id_ = 1;
 
     // The application's fonts as they were before any user override, so
     // "reset appearance" has something true to return to.

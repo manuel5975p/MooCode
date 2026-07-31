@@ -7,6 +7,7 @@
 #include <QInputDialog>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QMessageBox>
 
 #include "agent/persist.hpp"
 
@@ -33,6 +34,21 @@ QMenu* choice_submenu(QMenu* parent, const QString& title,
     return sub;
 }
 
+// Refuse a pick that cannot render text, and say why rather than leaving the
+// user to wonder what happened to their transcript.
+bool accept_font(QWidget* parent, const QFont& chosen) {
+    if (family_renders_text(chosen.family())) return true;
+    QMessageBox::warning(
+        parent, SettingsMenu::tr("Font"),
+        SettingsMenu::tr(
+            "“%1” has no letters — it covers only symbols or emoji.\n\n"
+            "Text would be drawn in a substitute face while the spaces came "
+            "from this font, which would push the words apart. Keeping the "
+            "previous font.")
+            .arg(chosen.family()));
+    return false;
+}
+
 QString or_dash(const std::string& s) {
     return s.empty() ? QStringLiteral("—") : QString::fromStdString(s);
 }
@@ -41,7 +57,11 @@ QString or_dash(const std::string& s) {
 // application font when it is unset.
 QFont effective_font(const std::string& family, int size) {
     QFont f = QApplication::font();
-    if (!family.empty()) f.setFamily(QString::fromStdString(family));
+    // Same guard as applyFonts: a stored family that cannot render text is not
+    // what the window is drawing, so seeding the dialog with it would open on a
+    // lie (and on a font the user is about to be told they cannot have).
+    if (family_renders_text(QString::fromStdString(family)))
+        f.setFamily(QString::fromStdString(family));
     if (size > 0) f.setPointSize(size);
     return f;
 }
@@ -55,6 +75,15 @@ QString font_label(const std::string& family, int size) {
 }
 
 }  // namespace
+
+bool family_renders_text(const QString& family) {
+    if (family.isEmpty()) return false;
+    // writingSystems() reports what the face actually covers, and it knows
+    // about fonts registered from the binary too (the bundled EB Garamond), so
+    // the shipped default passes when a user picks it by name. An unknown
+    // family reports nothing at all, which is the answer we want for it.
+    return QFontDatabase::writingSystems(family).contains(QFontDatabase::Latin);
+}
 
 std::vector<Profile> menu_profiles(const Settings& s) {
     return s.profiles.empty() ? builtin_profiles() : s.profiles;
@@ -72,6 +101,7 @@ void persist_settings(const std::string& home, const SettingsState& state) {
     s.thinking = state.thinking ? (*state.thinking ? 1 : 0) : -1;
     s.temperature = state.temperature ? *state.temperature : -1;
     s.gui = state.fonts;
+    s.gui.system_prompt = state.system_prompt;
     save_settings(home, s);
 }
 
@@ -228,6 +258,31 @@ void SettingsMenu::rebuild() {
         });
     }
 
+    // --- system prompt ---
+    {
+        const QString label =
+            state_.system_prompt.empty()
+                ? tr("System prompt…  (none)")
+                : tr("System prompt…  (%1 chars)")
+                      .arg(static_cast<int>(state_.system_prompt.size()));
+        QAction* a = menu_->addAction(label);
+        connect(a, &QAction::triggered, this, [this] {
+            bool ok = false;
+            const QString text = QInputDialog::getMultiLineText(
+                menu_, tr("System prompt"),
+                tr("Sent as the conversation's system message.\n"
+                   "Applies to the current conversation and every new one; "
+                   "leave empty for none."),
+                QString::fromStdString(state_.system_prompt), &ok);
+            if (!ok) return;
+            // Trailing whitespace only would be an invisible non-empty prompt.
+            const std::string next = text.trimmed().toStdString();
+            if (next == state_.system_prompt) return;
+            state_.system_prompt = next;
+            emit systemPromptChanged();
+        });
+    }
+
     menu_->addSeparator();
 
     // --- appearance: theme + fonts ---
@@ -258,7 +313,7 @@ void SettingsMenu::rebuild() {
             const QFont chosen = QFontDialog::getFont(
                 &ok, effective_font(state_.fonts.font, state_.fonts.font_size),
                 menu_, tr("Interface font"));
-            if (!ok) return;
+            if (!ok || !accept_font(menu_, chosen)) return;
             state_.fonts.font = chosen.family().toStdString();
             state_.fonts.font_size = chosen.pointSize();
             emit fontsChanged();
@@ -280,7 +335,7 @@ void SettingsMenu::rebuild() {
                     : effective_font(state_.fonts.chat_font, state_.fonts.chat_font_size);
             const QFont chosen =
                 QFontDialog::getFont(&ok, current, menu_, tr("Chat font"));
-            if (!ok) return;
+            if (!ok || !accept_font(menu_, chosen)) return;
             state_.fonts.chat_font = chosen.family().toStdString();
             state_.fonts.chat_font_size = chosen.pointSize();
             emit fontsChanged();
@@ -300,7 +355,7 @@ void SettingsMenu::rebuild() {
             const QFont chosen = QFontDialog::getFont(
                 &ok, current, menu_, tr("Code font"),
                 QFontDialog::MonospacedFonts);
-            if (!ok) return;
+            if (!ok || !accept_font(menu_, chosen)) return;
             state_.fonts.mono_font = chosen.family().toStdString();
             state_.fonts.mono_font_size = chosen.pointSize();
             emit fontsChanged();

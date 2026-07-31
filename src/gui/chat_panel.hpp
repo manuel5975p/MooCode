@@ -14,6 +14,7 @@
 // coalescing timer (kFlushMs), with a final exact render when the turn ends.
 
 #include <QFont>
+#include <QImage>
 #include <QPointer>
 #include <QScrollArea>
 #include <QString>
@@ -35,11 +36,23 @@ class ChatPanel : public QScrollArea {
 public:
     explicit ChatPanel(QWidget* parent = nullptr);
 
-    void addUserMessage(const QString& text);
+    // A user turn. `images` are the ones attached to it, shown as thumbnails
+    // under the text — the transcript is the only record of what was sent, since
+    // the saved conversation keeps the prose and drops the bytes.
+    void addUserMessage(const QString& text, const QVector<QImage>& images = {});
     void addErrorMessage(const QString& text);
     // A dim, non-Markdown note from the app itself (e.g. model detection
     // results) rather than from either party in the conversation.
     void addInfoMessage(const QString& text);
+
+    // A finished assistant turn, rendered in one go (a resumed conversation,
+    // rather than a live stream). `reasoning` gets the same collapsed
+    // disclosure a streamed turn's does; empty => no disclosure at all.
+    void addAssistantMessage(const QString& text, const QString& reasoning = QString());
+
+    // Drop every card. Ends any streaming turn first, so a resume mid-stream
+    // cannot leave a dangling target behind.
+    void clear();
 
     // Open an assistant card and make it the streaming target.
     void beginAssistantMessage();
@@ -93,6 +106,12 @@ private:
     bool dirty_ = false;
     bool follow_ = true;  // stick to the bottom until the user scrolls away
     QTimer flush_timer_;
+
+    // Per-turn render cost, for the opt-in trace only (agent/trace.hpp): a turn
+    // whose flushes were each under the slow-flush threshold can still have
+    // spent most of the turn rendering, which only the totals show.
+    int stream_flushes_ = 0;
+    qint64 stream_render_ms_ = 0;
 };
 
 }  // namespace moocode::gui

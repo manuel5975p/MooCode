@@ -150,6 +150,14 @@ add_library(moogui_theme STATIC gui/theme.cpp)
 target_include_directories(moogui_theme PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(moogui_theme PUBLIC agent_types agent_syntax)
 
+# --- moogui_convimport: folding a saved conversation into a chat-only one ----
+# Qt-free for the same reason moogui_theme is: it holds rules worth testing
+# (what survives the fold, and whether the source file may be written back to)
+# and a test for them should not need a display or a Qt install.
+add_library(moogui_convimport STATIC gui/conversation_import.cpp)
+target_include_directories(moogui_convimport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(moogui_convimport PUBLIC agent_types)
+
 # --- moogui: the Qt6 chat window --------------------------------------------
 # A second frontend beside the FTXUI TUI, sharing everything below agent_tui
 # (the agent loop, the providers, ~/.moo and the syntax highlighter) and none of
@@ -163,14 +171,28 @@ target_link_libraries(moogui_theme PUBLIC agent_types agent_syntax)
 # the bundled static OpenSSL never meets a second TLS stack.
 option(MOOCODE_GUI "Build the Qt6 chat GUI (moogui)" OFF)
 if(MOOCODE_GUI)
-  find_package(Qt6 REQUIRED COMPONENTS Widgets)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets Gui)
+  # --- moogui_attach: clipboard/drop payload -> ImageBlock -------------------
+  # A library rather than another moogui source, so a test can exercise the
+  # encode rules (passthrough vs re-encode, the downscale) against a hand-built
+  # QMimeData. Needs QtGui for QImage, hence the guard — but no widgets and no
+  # display: everything it does is in-memory.
+  add_library(moogui_attach STATIC gui/image_attach.cpp)
+  set_target_properties(moogui_attach PROPERTIES AUTOMOC OFF)
+  target_include_directories(moogui_attach PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(moogui_attach PUBLIC agent_types Qt6::Gui)
+
   add_executable(moogui gui/main.cpp gui/main_window.cpp gui/chat_panel.cpp
                         gui/markdown_view.cpp gui/agent_bridge.cpp
                         gui/settings_menu.cpp gui/moogui.qrc)
+  # conversation_import.cpp is linked in as a library, not compiled here, so the
+  # test and the GUI share one build of it.
   # Per-target rather than the global CMAKE_AUTOMOC, so no agent_* target pays
   # the moc scan.
   set_target_properties(moogui PROPERTIES AUTOMOC ON AUTORCC ON)
   target_include_directories(moogui PRIVATE ${PROJECT_SOURCE_DIR})
   target_link_libraries(moogui PRIVATE agent_core agent_provider agent_persist
-                                       agent_syntax moogui_theme Qt6::Widgets)
+                                       agent_syntax moogui_theme
+                                       moogui_convimport moogui_attach
+                                       Qt6::Widgets)
 endif()

@@ -26,9 +26,11 @@
 // here yet) a tool-capable agent would run shell commands with no gate.
 
 #include <atomic>
+#include <cstddef>
 #include <memory>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <QObject>
 #include <QString>
@@ -59,9 +61,15 @@ public:
     // Conversation so far, for autosave. Only valid while idle.
     const Conversation& history() const { return agent_->history(); }
 
+    // The system prompt the next new conversation will open with.
+    const std::string& systemPrompt() const { return agent_->system_prompt(); }
+
 public slots:
-    // Start a turn. Ignored while busy.
-    void send(const QString& prompt);
+    // Start a turn. `parts`, when non-empty, is the multimodal body of the user
+    // message (pasted images and the prose that goes with them) and supersedes
+    // `prompt` on the wire — `prompt` is still what the conversation file keeps,
+    // since the image bytes are not saved. Ignored while busy.
+    void send(const QString& prompt, std::vector<ContentPart> parts = {});
 
     // Abort the in-flight turn (and its HTTP request). Returns immediately —
     // this only raises the flag the loop polls.
@@ -78,6 +86,19 @@ public slots:
     // field by hand (see CLAUDE.md), this always constructs a new one, so no
     // field can go stale. Ignored while busy.
     void reconnect(const ProviderConnection& conn, const GenerationParams& gp);
+
+    // Replace the conversation wholesale — how the GUI resumes a saved
+    // conversation or starts a fresh one (with {}). Ignored while busy: the
+    // worker thread is appending to exactly this vector. Returns whether it
+    // took effect.
+    bool setHistory(Conversation conv);
+
+    // Replace the system prompt. Agent only prepends it to an *empty*
+    // conversation, so on a conversation already under way the leading system
+    // message is rewritten in place too — otherwise the change would silently
+    // not reach the next request. Ignored while busy; returns whether it took
+    // effect.
+    bool setSystemPrompt(std::string prompt);
 
     // Ask the live endpoint which models it serves. Network I/O, so it runs on
     // the worker thread and reports back through modelsDetected / failed, and
@@ -113,6 +134,9 @@ private:
     std::unique_ptr<Agent> agent_;
     std::thread worker_;
     std::atomic<bool> busy_{false};
+    // Deltas seen this turn, for the opt-in trace only (agent/trace.hpp).
+    // Written from the worker thread, read when the turn ends.
+    std::atomic<std::size_t> trace_deltas_{0};
 };
 
 }  // namespace moocode::gui

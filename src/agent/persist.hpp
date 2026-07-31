@@ -56,11 +56,11 @@ std::vector<std::string> filter_blacklisted(
     const std::vector<std::string>& models,
     const std::vector<std::string>& blacklist);
 
-// Appearance settings for the Qt GUI, persisted as a [gui] table. Kept in the
-// one ~/.moo store rather than a Qt-side config file so moocode still has a
-// single source of configuration, and namespaced under [gui] because — unlike
-// `theme`, which both frontends honour — these mean nothing to the TUI. Empty
-// / zero everywhere means "unset": use the platform default.
+// Settings for the Qt GUI, persisted as a [gui] table. Kept in the one ~/.moo
+// store rather than a Qt-side config file so moocode still has a single source
+// of configuration, and namespaced under [gui] because — unlike `theme`, which
+// both frontends honour — these mean nothing to the TUI. Empty / zero
+// everywhere means "unset": use the platform default.
 struct GuiSettings {
     std::string font;        // interface font family; empty => system default
     int font_size = 0;       // point size; 0 => system default
@@ -68,6 +68,11 @@ struct GuiSettings {
     int mono_font_size = 0;  // point size; 0 => derived from font_size
     std::string chat_font;   // transcript prose family; empty => follow `font`
     int chat_font_size = 0;  // point size; 0 => follow `font_size`
+    // System prompt for the GUI's chat agent; empty => none. GUI-scoped on
+    // purpose: the TUI's prompt is a template carrying the tool list and the
+    // working-directory context ({TOOLS}, {DIR}, …), and a chat-shaped prompt
+    // written here would be actively wrong for a tool-using agent.
+    std::string system_prompt;
 };
 
 // Configuration persisted in settings.toml. An empty string / zero means "not

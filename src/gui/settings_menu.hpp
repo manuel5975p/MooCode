@@ -35,6 +35,7 @@ struct SettingsState {
     std::optional<double> temperature;   // nullopt => omitted from requests
     SyntaxTheme theme = SyntaxTheme::Default;
     GuiSettings fonts;                   // the [gui] table; empty/0 => defaults
+    std::string system_prompt;           // "" => no system message at all
 };
 
 class SettingsMenu : public QObject {
@@ -59,6 +60,8 @@ signals:
     void themeChanged(SyntaxTheme theme);
     // A font family changed (or was reset); the caller re-applies both fonts.
     void fontsChanged();
+    // The system prompt was edited; the caller pushes it into the agent.
+    void systemPromptChanged();
     // Text size: +1 larger, -1 smaller, 0 reset. The caller does the arithmetic
     // because only it knows the startup defaults a reset must return to.
     void textSizeStep(int delta);
@@ -78,6 +81,18 @@ private:
 // The profile list to offer: the configured ones, or the built-ins when
 // settings.toml has none — the same fallback listmodels --all uses.
 std::vector<Profile> menu_profiles(const Settings& s);
+
+// Whether `family` is installed here and actually covers Latin text.
+//
+// Not a nicety: the font dialog offers emoji and symbol faces like any other
+// (an emoji face even reports fixed pitch, so the code-font dialog's monospace
+// filter does not hide it), and picking one does not merely look odd. Qt merges
+// fonts per character, so the letters come from a fallback face while the
+// *space* still comes from the chosen font — and an emoji font's space is
+// nearly four times as wide as the text's, which spreads every word apart. A
+// family that is simply missing on this machine fails the same way, so the one
+// check covers both. Empty family => false ("unset", i.e. use the default).
+bool family_renders_text(const QString& family);
 
 // Write the parts of `state` that belong in settings.toml back to `home`,
 // preserving everything else in the file. Best-effort, like save_settings.

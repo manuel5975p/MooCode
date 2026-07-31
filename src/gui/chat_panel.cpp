@@ -3,10 +3,16 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPixmap>
 #include <QScrollBar>
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <QElapsedTimer>
+
+#include <string>
+
+#include "agent/trace.hpp"
 #include "gui/markdown_view.hpp"
 #include "gui/theme.hpp"
 
@@ -19,6 +25,15 @@ constexpr int kFlushMs = 80;
 
 // How close to the bottom still counts as "following" the stream, in pixels.
 constexpr int kFollowSlack = 24;
+
+// Long edge of an attached image's thumbnail in the transcript: big enough to
+// recognise the picture, small enough that a card stays a card.
+constexpr int kThumbSide = 160;
+
+// A flush slower than this is traced individually: at kFlushMs between flushes,
+// anything approaching that interval means the GUI thread is spending most of
+// its time re-rendering and the window will stop feeling live.
+constexpr qint64 kSlowFlushMs = 40;
 
 }  // namespace
 
@@ -114,12 +129,35 @@ QWidget* ChatPanel::rowOf(QWidget* body) const {
     return w;
 }
 
-void ChatPanel::addUserMessage(const QString& text) {
+void ChatPanel::addUserMessage(const QString& text, const QVector<QImage>& images) {
     MarkdownView* body = nullptr;
     addCard("mooUserCard", QString(), &body, /*accent_rule=*/false);
     // Shown as typed: this is the user's text, not model Markdown, and quietly
     // reinterpreting it as markup would be surprising.
     body->setPlainThemedText(text, /*dim=*/false);
+    // An image-only turn has no prose to show, and an empty view would still
+    // claim a line's height inside the bubble.
+    if (text.isEmpty() && !images.isEmpty()) body->setVisible(false);
+
+    if (!images.isEmpty()) {
+        QWidget* card = body->parentWidget();
+        auto* box = qobject_cast<QVBoxLayout*>(card->layout());
+        auto* strip = new QWidget(card);
+        auto* row = new QHBoxLayout(strip);
+        row->setContentsMargins(0, 2, 0, 0);
+        row->setSpacing(6);
+        for (const QImage& img : images) {
+            if (img.isNull()) continue;
+            auto* thumb = new QLabel(strip);
+            thumb->setObjectName("mooThumb");
+            thumb->setPixmap(QPixmap::fromImage(img).scaled(
+                kThumbSide, kThumbSide, Qt::KeepAspectRatio,
+                Qt::SmoothTransformation));
+            row->addWidget(thumb);
+        }
+        row->addStretch(1);
+        if (box) box->addWidget(strip);
+    }
     scrollToBottomIfFollowing();
 }
 
@@ -147,6 +185,8 @@ void ChatPanel::beginAssistantMessage() {
             /*accent_rule=*/true);
     stream_body_ = body;
     dirty_ = false;
+    stream_flushes_ = 0;
+    stream_render_ms_ = 0;
     flush_timer_.start();
     scrollToBottomIfFollowing();
 }
@@ -190,10 +230,28 @@ void ChatPanel::appendReasoning(const QString& fragment) {
 void ChatPanel::flushStream() {
     if (!dirty_) return;
     dirty_ = false;
+
+    // Each flush re-parses the whole message so far, so the cost grows with the
+    // answer. Whether that is what a "frozen" window is actually doing is the
+    // question the trace answers; see agent/trace.hpp.
+    const bool tracing = trace::enabled();
+    QElapsedTimer timer;
+    if (tracing) timer.start();
+
     if (stream_reasoning_ && !reasoning_buf_.isEmpty())
         stream_reasoning_->setPlainThemedText(reasoning_buf_, /*dim=*/true);
     if (stream_body_) stream_body_->setMarkdownText(answer_buf_);
     scrollToBottomIfFollowing();
+
+    if (tracing) {
+        const qint64 ms = timer.elapsed();
+        ++stream_flushes_;
+        stream_render_ms_ += ms;
+        if (ms >= kSlowFlushMs)
+            trace::line("chat: flush " + std::to_string(ms) + "ms for " +
+                        std::to_string(answer_buf_.size()) + " chars answer + " +
+                        std::to_string(reasoning_buf_.size()) + " reasoning");
+    }
 }
 
 void ChatPanel::endAssistantMessage(const QString& final_text) {
@@ -201,6 +259,11 @@ void ChatPanel::endAssistantMessage(const QString& final_text) {
     if (!final_text.isEmpty()) answer_buf_ = final_text;
     dirty_ = true;
     flushStream();
+    if (trace::enabled() && stream_flushes_ > 0)
+        trace::line("chat: turn rendered " + std::to_string(stream_flushes_) +
+                    " times, " + std::to_string(stream_render_ms_) +
+                    "ms total for " + std::to_string(answer_buf_.size()) +
+                    " chars");
 
     if (stream_body_ && answer_buf_.isEmpty()) {
         // Nothing was produced (cancelled, or an empty turn): drop the card
@@ -214,6 +277,38 @@ void ChatPanel::endAssistantMessage(const QString& final_text) {
     }
     stream_body_ = nullptr;
     stream_reasoning_ = nullptr;
+}
+
+void ChatPanel::addAssistantMessage(const QString& text, const QString& reasoning) {
+    // Routed through the streaming path rather than open-coded: the reasoning
+    // disclosure and the drop-an-empty-card rule then behave identically for a
+    // replayed turn and a live one.
+    beginAssistantMessage();
+    if (!reasoning.isEmpty()) appendReasoning(reasoning);
+    appendAnswer(text);
+    endAssistantMessage(text);
+}
+
+void ChatPanel::clear() {
+    // Not endAssistantMessage(): that would render the buffer into a card we
+    // are about to delete, and its empty-card branch would then delete a row
+    // twice over.
+    flush_timer_.stop();
+    stream_body_ = nullptr;
+    stream_reasoning_ = nullptr;
+    answer_buf_.clear();
+    reasoning_buf_.clear();
+    dirty_ = false;
+
+    // Everything but the trailing stretch, which keeps the cards top-aligned.
+    while (column_->count() > 1) {
+        QLayoutItem* item = column_->takeAt(0);
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    views_.clear();
+    prose_widgets_.clear();
+    follow_ = true;
 }
 
 void ChatPanel::setTheme(SyntaxTheme theme) {

@@ -1,24 +1,35 @@
 #include "gui/main_window.hpp"
 
+#include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QCloseEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QListWidget>
 #include <QMenu>
+#include <QMimeData>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cstddef>
 #include <ctime>
 #include <filesystem>
 #include <utility>
 
 #include "gui/agent_bridge.hpp"
 #include "gui/chat_panel.hpp"
+#include "gui/conversation_import.hpp"
 #include "gui/theme.hpp"
 
 namespace moocode::gui {
@@ -30,6 +41,13 @@ constexpr int kMaxInputLines = 6;
 
 // Vertical padding inside the composer, on top of the text lines themselves.
 constexpr int kInputPadding = 18;
+
+// Long edge of a staged image's chip thumbnail in the composer.
+constexpr int kChipThumbSide = 34;
+
+// How many images one turn may carry. Not a protocol limit — a guard against a
+// stray multi-select drop turning into a request nobody meant to pay for.
+constexpr std::size_t kMaxAttachments = 8;
 
 // Bounds for the text-size steps. Below ~7pt the UI stops being legible; above
 // ~32pt a chat window stops being usable.
@@ -82,6 +100,20 @@ std::string now_iso() {
     return std::string(buf);
 }
 
+// How many recent conversations the header menu lists inline before sending
+// the user to the full browser.
+constexpr int kRecentInMenu = 8;
+
+// One line for a conversation in the menu / browser.
+QString summary_label(const ConvSummary& s) {
+    const QString title = s.title.empty()
+                              ? QObject::tr("(untitled)")
+                              : QString::fromStdString(s.title).simplified();
+    return QStringLiteral("%1   ·  %2  (%3)")
+        .arg(title, QString::fromStdString(s.updated))
+        .arg(static_cast<int>(s.count));
+}
+
 }  // namespace
 
 MainWindow::MainWindow(std::string home, Settings settings, ProviderConnection conn,
@@ -128,6 +160,24 @@ MainWindow::MainWindow(std::string home, Settings settings, ProviderConnection c
     hbox->addWidget(title_);
     hbox->addWidget(chip_, 1);
 
+    conversations_button_ = new QToolButton(header_);
+    conversations_button_->setObjectName("mooSettings");  // same header styling
+    conversations_button_->setText(QStringLiteral("Chats  ▾"));
+    conversations_button_->setPopupMode(QToolButton::InstantPopup);
+    conversations_button_->setCursor(Qt::PointingHandCursor);
+    conversations_menu_ = new QMenu(conversations_button_);
+    conversations_button_->setMenu(conversations_menu_);
+    new_conversation_ = new QAction(tr("New conversation"), this);
+    new_conversation_->setShortcut(QKeySequence::New);
+    connect(new_conversation_, &QAction::triggered, this,
+            &MainWindow::onNewConversation);
+    addAction(new_conversation_);  // so Ctrl+N works without opening the menu
+    // Rebuilt on show rather than kept in sync: the list also changes from
+    // outside this window (the TUI saving in the same directory).
+    connect(conversations_menu_, &QMenu::aboutToShow, this,
+            &MainWindow::rebuildConversationsMenu);
+    hbox->addWidget(conversations_button_);
+
     settings_button_ = new QToolButton(header_);
     settings_button_->setObjectName("mooSettings");
     settings_button_->setText(QStringLiteral("Settings  ▾"));
@@ -153,14 +203,30 @@ MainWindow::MainWindow(std::string home, Settings settings, ProviderConnection c
     cbox->setContentsMargins(16, 10, 16, 10);
     cbox->setSpacing(6);
 
+    // Staged images sit above the input, in the order they will be sent. Hidden
+    // while empty so the composer keeps its usual height.
+    attach_strip_ = new QWidget(composer);
+    attach_strip_->setObjectName("mooAttachStrip");
+    attach_box_ = new QHBoxLayout(attach_strip_);
+    attach_box_->setContentsMargins(0, 0, 0, 0);
+    attach_box_->setSpacing(6);
+    attach_strip_->setVisible(false);
+    cbox->addWidget(attach_strip_);
+
     auto* rowbox = new QHBoxLayout();
     rowbox->setSpacing(8);
     input_ = new QPlainTextEdit(composer);
     input_->setObjectName("mooInput");
-    input_->setPlaceholderText(
-        QStringLiteral("Message moocode…    (Enter to send, Shift+Enter for a newline)"));
+    input_->setPlaceholderText(QStringLiteral(
+        "Message moocode…    (Enter to send, Shift+Enter for a newline, "
+        "Ctrl+V to paste an image)"));
     input_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     input_->installEventFilter(this);
+    // Drops land on the viewport, not on the QPlainTextEdit itself: it is a
+    // QAbstractScrollArea, and the viewport is the widget the drag actually
+    // enters. Key presses still go to input_, which has the focus.
+    input_->setAcceptDrops(true);
+    input_->viewport()->installEventFilter(this);
     // Height tracks the content, between one line and kMaxInputLines. The
     // metrics are read on each change rather than captured, so a font change
     // does not leave this recomputing heights from the old line height.
@@ -212,6 +278,8 @@ MainWindow::MainWindow(std::string home, Settings settings, ProviderConnection c
             &MainWindow::onTextSizeStep);
     connect(settings_menu_, &SettingsMenu::modelsRequested, this,
             &MainWindow::onModelsRequested);
+    connect(settings_menu_, &SettingsMenu::systemPromptChanged, this,
+            &MainWindow::onSystemPromptChanged);
     connect(bridge_, &AgentBridge::modelsDetected, this,
             &MainWindow::onModelsDetected);
 
@@ -244,8 +312,14 @@ void MainWindow::applyFonts() {
     // Prose: set application-wide, which reaches every widget that has not been
     // given an explicit font — including the MarkdownViews, whose documents are
     // sized from their widget font.
+    // Each family is honoured only if it can actually render text. The stored
+    // value may predate the check, come from another machine that had the font,
+    // or have been hand-edited — and applying an unusable family is not a
+    // cosmetic mistake but the "every word drifts apart" bug (see
+    // family_renders_text). The pinned *size* still applies either way.
     QFont ui = default_ui_font_;
-    if (!f.font.empty()) ui.setFamily(QString::fromStdString(f.font));
+    if (family_renders_text(QString::fromStdString(f.font)))
+        ui.setFamily(QString::fromStdString(f.font));
     if (f.font_size > 0) ui.setPointSize(f.font_size);
     qApp->setFont(ui);
     if (input_) {
@@ -257,8 +331,9 @@ void MainWindow::applyFonts() {
     // default to the interface font, so leaving this unset keeps one face
     // across the whole window — which is the shipped default.
     QFont chat = ui;
-    const bool chat_split = !f.chat_font.empty() || f.chat_font_size > 0;
-    if (!f.chat_font.empty()) chat.setFamily(QString::fromStdString(f.chat_font));
+    const bool chat_family = family_renders_text(QString::fromStdString(f.chat_font));
+    const bool chat_split = chat_family || f.chat_font_size > 0;
+    if (chat_family) chat.setFamily(QString::fromStdString(f.chat_font));
     if (f.chat_font_size > 0) chat.setPointSize(f.chat_font_size);
     // A default-constructed QFont is the "inherit" signal, so only a split
     // actually overrides the transcript.
@@ -268,7 +343,8 @@ void MainWindow::applyFonts() {
     // prose size so the two stay in proportion. It tracks the transcript's
     // prose, not the chrome's — a code block sits among the messages.
     QFont mono = default_mono_font_;
-    if (!f.mono_font.empty()) mono.setFamily(QString::fromStdString(f.mono_font));
+    if (family_renders_text(QString::fromStdString(f.mono_font)))
+        mono.setFamily(QString::fromStdString(f.mono_font));
     if (f.mono_font_size > 0) {
         mono.setPointSize(f.mono_font_size);
     } else {
@@ -300,9 +376,11 @@ void MainWindow::updateChips() {
 void MainWindow::setBusyUi(bool busy) {
     send_->setEnabled(!busy);
     stop_->setEnabled(busy);
-    // Changing the endpoint mid-turn would race the worker thread; the bridge
-    // ignores such calls, so disable the control rather than fail silently.
+    // Changing the endpoint — or the conversation — mid-turn would race the
+    // worker thread; the bridge ignores such calls, so disable the controls
+    // rather than fail silently.
     settings_button_->setEnabled(!busy);
+    conversations_button_->setEnabled(!busy);
 }
 
 GenerationParams MainWindow::currentParams() const {
@@ -334,13 +412,108 @@ ProviderConnection MainWindow::connectionFor(const std::string& profile,
     return c;
 }
 
+void MainWindow::attachFromMime(const QMimeData* md) {
+    AttachResult r = attach_images(md);
+    for (const QString& e : r.errors) chat_->addErrorMessage(e);
+    for (StagedImage& s : r.images) {
+        if (attachments_.size() >= kMaxAttachments) {
+            chat_->addInfoMessage(
+                tr("At most %1 images per message — the rest were not attached.")
+                    .arg(static_cast<int>(kMaxAttachments)));
+            break;
+        }
+        s.id = next_attach_id_++;
+        attachments_.push_back(std::move(s));
+    }
+    rebuildAttachStrip();
+}
+
+void MainWindow::rebuildAttachStrip() {
+    while (QLayoutItem* item = attach_box_->takeAt(0)) {
+        if (QWidget* w = item->widget()) w->deleteLater();
+        delete item;
+    }
+    for (const StagedImage& s : attachments_) {
+        auto* chip = new QWidget(attach_strip_);
+        chip->setObjectName("mooAttachChip");
+        auto* box = new QHBoxLayout(chip);
+        box->setContentsMargins(4, 3, 4, 3);
+        box->setSpacing(6);
+        if (!s.preview.isNull()) {
+            auto* thumb = new QLabel(chip);
+            thumb->setPixmap(QPixmap::fromImage(s.preview).scaled(
+                kChipThumbSide, kChipThumbSide, Qt::KeepAspectRatio,
+                Qt::SmoothTransformation));
+            box->addWidget(thumb);
+        }
+        auto* name = new QLabel(s.label, chip);
+        name->setObjectName("mooAttachName");
+        box->addWidget(name);
+        auto* remove = new QToolButton(chip);
+        remove->setObjectName("mooAttachRemove");
+        remove->setText(QStringLiteral("✕"));
+        remove->setCursor(Qt::PointingHandCursor);
+        remove->setToolTip(tr("Remove this image"));
+        const int id = s.id;
+        connect(remove, &QToolButton::clicked, this, [this, id] {
+            std::erase_if(attachments_,
+                          [id](const StagedImage& a) { return a.id == id; });
+            rebuildAttachStrip();
+        });
+        box->addWidget(remove);
+        // Chips are shown at their natural width; the picture is the point, and
+        // stretching them would make one image look like a progress bar.
+        chip->setToolTip(QStringLiteral("%1  ·  %2")
+                             .arg(s.label,
+                                  QString::fromStdString(s.block.media_type)));
+        attach_box_->addWidget(chip);
+    }
+    attach_box_->addStretch(1);
+    attach_strip_->setVisible(!attachments_.empty());
+}
+
+void MainWindow::clearAttachments() {
+    attachments_.clear();
+    next_attach_id_ = 1;
+    rebuildAttachStrip();
+}
+
 void MainWindow::onSend() {
     const QString text = input_->toPlainText().trimmed();
-    if (text.isEmpty() || bridge_->busy()) return;
+    if (bridge_->busy()) return;
+    if (text.isEmpty() && attachments_.empty()) return;
+
+    // Agent::run needs prose, so an image-only turn is given the same
+    // "[image #N]" reference the TUI's chips leave behind once stripped. It is
+    // also what the conversation file records for the turn: the bytes are not
+    // saved, so without it a resumed transcript would show a blank user card.
+    QString prose = text;
+    if (prose.isEmpty()) {
+        QStringList refs;
+        for (const StagedImage& s : attachments_)
+            refs << QStringLiteral("[image #%1]").arg(s.id);
+        prose = refs.join(QLatin1Char(' '));
+    }
+
+    // Text first, then one part per image — the order the model sees them in.
+    // Left empty for a text-only turn, which keeps that path byte-identical to
+    // what it was before images existed.
+    std::vector<ContentPart> parts;
+    QVector<QImage> thumbs;
+    if (!attachments_.empty()) {
+        parts.push_back(ContentPart{.text = prose.toStdString(), .image = {}});
+        for (StagedImage& s : attachments_) {
+            parts.push_back(
+                ContentPart{.text = {}, .image = std::move(s.block)});
+            thumbs.push_back(s.preview);
+        }
+    }
+
     input_->clear();
-    chat_->addUserMessage(text);
+    chat_->addUserMessage(prose, thumbs);
+    clearAttachments();
     chat_->beginAssistantMessage();
-    bridge_->send(text);
+    bridge_->send(prose, std::move(parts));
 }
 
 void MainWindow::onStop() { bridge_->cancel(); }
@@ -488,6 +661,163 @@ void MainWindow::onModelsDetected(const QStringList& models) {
     updateChips();
 }
 
+void MainWindow::onSystemPromptChanged() {
+    const std::string& prompt = settings_menu_->state().system_prompt;
+    if (!bridge_->setSystemPrompt(prompt)) return;  // busy; the menu is disabled
+    persist_settings(home_, settings_menu_->state());
+    chat_->addInfoMessage(prompt.empty()
+                              ? tr("System prompt cleared.")
+                              : tr("System prompt set (%1 characters).")
+                                    .arg(static_cast<int>(prompt.size())));
+}
+
+void MainWindow::rebuildConversationsMenu() {
+    conversations_menu_->clear();
+
+    conversations_menu_->addAction(new_conversation_);
+
+    std::error_code ec;
+    const std::string cwd = std::filesystem::current_path(ec).string();
+    const std::string dir = conversations_dir(home_);
+    const std::vector<ConvSummary> here = list_conversations(dir, cwd);
+
+    if (!here.empty()) {
+        conversations_menu_->addSeparator();
+        // The heading is a disabled action rather than a section title so the
+        // whole menu reads the same on every platform style.
+        QAction* head = conversations_menu_->addAction(tr("Recent in this folder"));
+        head->setEnabled(false);
+        const int n = std::min<int>(kRecentInMenu, static_cast<int>(here.size()));
+        for (int i = 0; i < n; ++i) {
+            const ConvSummary& s = here[static_cast<std::size_t>(i)];
+            QAction* a = conversations_menu_->addAction(summary_label(s));
+            a->setCheckable(true);
+            a->setChecked(s.path == conv_path_);
+            const std::string path = s.path;
+            connect(a, &QAction::triggered, this,
+                    [this, path] { openConversation(path); });
+        }
+    }
+
+    conversations_menu_->addSeparator();
+    QAction* browse = conversations_menu_->addAction(tr("All conversations…"));
+    connect(browse, &QAction::triggered, this, &MainWindow::onBrowseConversations);
+}
+
+void MainWindow::onNewConversation() {
+    if (!bridge_->setHistory({})) return;
+    chat_->clear();
+    clearAttachments();  // staged for a conversation that no longer exists
+    conv_path_.clear();
+    conv_created_.clear();
+    in_tokens_ = 0;
+    out_tokens_ = 0;
+    updateChips();
+    input_->setFocus();
+}
+
+bool MainWindow::continueLastConversation() {
+    std::error_code ec;
+    const std::vector<ConvSummary> here = list_conversations(
+        conversations_dir(home_), std::filesystem::current_path(ec).string());
+    if (here.empty()) return false;
+    openConversation(here.front().path);
+    return true;
+}
+
+void MainWindow::onBrowseConversations() {
+    // Everything, not just this folder: the point of the browser is reaching
+    // the conversation the recents list does not have.
+    const std::vector<ConvSummary> all =
+        list_conversations(conversations_dir(home_), std::string());
+    if (all.empty()) {
+        chat_->addInfoMessage(tr("No saved conversations yet."));
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Conversations"));
+    dlg.resize(640, 420);
+    auto* box = new QVBoxLayout(&dlg);
+    auto* list = new QListWidget(&dlg);
+    for (const ConvSummary& s : all) list->addItem(summary_label(s));
+    list->setCurrentRow(0);
+    box->addWidget(list, 1);
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Open | QDialogButtonBox::Cancel, &dlg);
+    box->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(list, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+    const int row = list->currentRow();
+    if (row < 0 || row >= static_cast<int>(all.size())) return;
+    openConversation(all[static_cast<std::size_t>(row)].path);
+}
+
+void MainWindow::openConversation(const std::string& path) {
+    if (bridge_->busy()) return;
+    auto loaded = load_conversation_with_meta(path);
+    if (!loaded) {
+        chat_->addErrorMessage(QString::fromStdString(loaded.error().msg));
+        return;
+    }
+
+    bool folded = false;
+    Conversation conv = to_chat_only(loaded->first, folded);
+    if (!bridge_->setHistory(conv)) return;
+
+    chat_->clear();
+    renderConversation(conv);
+
+    // Continue in the same file only when nothing was lost in the rewrite.
+    // Saving a folded conversation back over its source would replace the
+    // TUI's tool calls and results with this transcript's prose summary of
+    // them — silently, and the next TUI /resume would find them gone.
+    conv_path_ = folded ? std::string() : path;
+    conv_created_ = folded ? std::string() : loaded->second.created;
+    // The counters measure this window's spend; a resumed conversation has
+    // none yet, and the saved file does not record the old totals.
+    in_tokens_ = 0;
+    out_tokens_ = 0;
+    updateChips();
+
+    if (folded)
+        chat_->addInfoMessage(
+            tr("Resumed from a tool-using session: the tool calls and results "
+               "were folded into the transcript above, and this window will "
+               "save its continuation as a new conversation."));
+    input_->setFocus();
+}
+
+void MainWindow::renderConversation(const Conversation& conv) {
+    for (const Message& m : conv) {
+        switch (m.role()) {
+            case Role::System:
+                // Held in the history, not shown: it is configuration (Settings
+                // ▸ System prompt), not something either party said.
+                break;
+            case Role::User: {
+                // Multimodal user turns keep only their text: the image bytes
+                // are not saved with the conversation.
+                std::string text = m.content();
+                if (text.empty())
+                    for (const ContentPart& p : m.parts())
+                        if (!p.text.empty()) text += p.text;
+                chat_->addUserMessage(QString::fromStdString(text));
+                break;
+            }
+            case Role::Assistant:
+                chat_->addAssistantMessage(QString::fromStdString(m.content()),
+                                           QString::fromStdString(m.reasoning()));
+                break;
+            case Role::Tool:
+                break;  // to_chat_only() has already folded these away
+        }
+    }
+}
+
 void MainWindow::autosave() {
     if (home_.empty()) return;
     const Conversation& conv = bridge_->history();
@@ -527,6 +857,48 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
         if (is_return && ke->modifiers() == Qt::NoModifier) {
             onSend();
             return true;
+        }
+        // Paste: an image in the clipboard is attached instead of pasted, since
+        // QPlainTextEdit would either drop it or insert its file path as text.
+        // The image wins over any text the same payload also carries (copying a
+        // picture from a browser offers both, and the picture is what was
+        // meant); the context menu's own Paste is not filtered, so the text is
+        // still reachable.
+        if (ke->matches(QKeySequence::Paste)) {
+            const QMimeData* md = QApplication::clipboard()->mimeData();
+            if (has_attachable_image(md)) {
+                attachFromMime(md);
+                return true;
+            }
+        }
+    }
+
+    // Dropping an image file onto the composer attaches it, rather than
+    // inserting the file:// URL as text. Both DragEnter and DragMove must accept
+    // or no drop is ever delivered.
+    if (obj == input_->viewport()) {
+        switch (e->type()) {
+            case QEvent::DragEnter:
+            case QEvent::DragMove: {
+                auto* de = static_cast<QDragMoveEvent*>(e);
+                if (has_attachable_image(de->mimeData())) {
+                    de->acceptProposedAction();
+                    return true;
+                }
+                break;
+            }
+            case QEvent::Drop: {
+                auto* de = static_cast<QDropEvent*>(e);
+                if (has_attachable_image(de->mimeData())) {
+                    attachFromMime(de->mimeData());
+                    de->acceptProposedAction();
+                    input_->setFocus();
+                    return true;
+                }
+                break;
+            }
+            default:
+                break;
         }
     }
     return QMainWindow::eventFilter(obj, e);
