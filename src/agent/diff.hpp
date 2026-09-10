@@ -22,9 +22,11 @@ struct DiffLine {
 
 // Classic LCS line diff of `old_text` vs `new_text` (each split on '\n').
 // Returns the complete diff in order. A trailing newline does not synthesise a
-// spurious empty final line. Above a hard line cap (2000 lines/side) the LCS
-// table is skipped and the result degrades to "whole file replaced" (all of old
-// deleted, all of new added), keeping memory bounded. post: deterministic.
+// spurious empty final line. Common prefix/suffix lines are matched outright;
+// only the differing middle goes through the LCS, and above a hard line cap
+// (2000 lines/side of that middle) the table is skipped and it degrades to
+// "middle replaced" (all of old deleted, all of new added), keeping memory
+// bounded. post: deterministic.
 std::vector<DiffLine> diff_lines(std::string_view old_text,
                                  std::string_view new_text);
 

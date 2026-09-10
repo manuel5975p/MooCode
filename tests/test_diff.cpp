@@ -512,3 +512,57 @@ TEST("render_ansi_diff: colors each op and ends lines with a reset") {
     CHECK(s.find("\033[2m  z") != std::string::npos);   // dim context
     CHECK(s.find("\033[0m\n") != std::string::npos);    // reset + newline
 }
+
+TEST("diff_lines: a small edit in a huge file stays a small diff") {
+    // Regression: files above the LCS line cap used to degrade to "everything
+    // deleted, everything added". The common prefix/suffix must be matched
+    // outright so only the touched region is diffed.
+    std::string big;
+    for (int i = 0; i < 5000; ++i) big += "line " + std::to_string(i) + "\n";
+    std::string edited = big;
+    const std::string needle = "line 2500\n";
+    edited.replace(edited.find(needle), needle.size(), "changed\n");
+    auto c = count(diff_lines(big, edited));
+    CHECK_EQ(c.add, 1);
+    CHECK_EQ(c.del, 1);
+    CHECK_EQ(c.ctx, 4999);
+}
+
+TEST("diff_lines: an edit touching only the end of a huge file is small") {
+    std::string big;
+    for (int i = 0; i < 3000; ++i) big += "l" + std::to_string(i) + "\n";
+    auto c = count(diff_lines(big, big + "TAIL\n"));
+    CHECK_EQ(c.add, 1);
+    CHECK_EQ(c.del, 0);
+    CHECK_EQ(c.ctx, 3000);
+    auto c2 = count(diff_lines(big, "NEW\n" + big));
+    CHECK_EQ(c2.add, 1);
+    CHECK_EQ(c2.ctx, 3000);
+}
+
+TEST("diff_lines: changes at both ends of a huge file still hit the cap") {
+    // No common prefix or suffix and a middle above the LCS cap: the documented
+    // fallback (everything deleted, everything added) still applies and must
+    // stay bounded rather than build a 3000x3000 table.
+    std::string big;
+    for (int i = 0; i < 3000; ++i) big += "l" + std::to_string(i) + "\n";
+    auto c = count(diff_lines(big, "NEW\n" + big + "TAIL\n"));
+    CHECK_EQ(c.del, 3000);
+    CHECK_EQ(c.add, 3002);
+    CHECK_EQ(c.ctx, 0);
+}
+
+TEST("diff_lines: prefix/suffix trim does not double-count overlapping lines") {
+    // "a\na" -> "a": prefix eats one 'a', suffix must not also claim it.
+    auto c = count(diff_lines("a\na", "a"));
+    CHECK_EQ(c.ctx, 1);
+    CHECK_EQ(c.del, 1);
+    CHECK_EQ(c.add, 0);
+    auto c2 = count(diff_lines("a", "a\na"));
+    CHECK_EQ(c2.ctx, 1);
+    CHECK_EQ(c2.add, 1);
+    auto c3 = count(diff_lines("", "x"));
+    CHECK_EQ(c3.add, 1);
+    auto c4 = count(diff_lines("x", ""));
+    CHECK_EQ(c4.del, 1);
+}

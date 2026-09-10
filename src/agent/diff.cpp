@@ -48,12 +48,43 @@ std::vector<DiffLine> whole_replace(const std::vector<std::string_view>& a,
 
 std::vector<DiffLine> diff_lines(std::string_view old_text,
                                  std::string_view new_text) {
-    const std::vector<std::string_view> a = split_lines(old_text);
-    const std::vector<std::string_view> b = split_lines(new_text);
+    const std::vector<std::string_view> a_all = split_lines(old_text);
+    const std::vector<std::string_view> b_all = split_lines(new_text);
+
+    // Strip the common prefix and suffix before the LCS. An edit_file call
+    // touches a handful of lines in a file that may be thousands long; without
+    // this the line cap below would kick in for any big file and the diff would
+    // degrade to "everything deleted, everything added".
+    std::size_t prefix = 0;
+    while (prefix < a_all.size() && prefix < b_all.size() &&
+           a_all[prefix] == b_all[prefix])
+        ++prefix;
+    std::size_t suffix = 0;
+    while (suffix < a_all.size() - prefix && suffix < b_all.size() - prefix &&
+           a_all[a_all.size() - 1 - suffix] == b_all[b_all.size() - 1 - suffix])
+        ++suffix;
+
+    std::vector<DiffLine> out;
+    out.reserve(a_all.size() + b_all.size() - prefix - suffix);
+    for (std::size_t k = 0; k < prefix; ++k)
+        out.push_back({DiffLine::Op::Context, std::string(a_all[k])});
+
+    const std::vector<std::string_view> a(a_all.begin() + prefix,
+                                          a_all.end() - suffix);
+    const std::vector<std::string_view> b(b_all.begin() + prefix,
+                                          b_all.end() - suffix);
+    auto tail = [&] {
+        for (std::size_t k = a_all.size() - suffix; k < a_all.size(); ++k)
+            out.push_back({DiffLine::Op::Context, std::string(a_all[k])});
+        return std::move(out);
+    };
     const std::size_t n = a.size();
     const std::size_t m = b.size();
 
-    if (n > kMaxLcsLines || m > kMaxLcsLines) return whole_replace(a, b);
+    if (n > kMaxLcsLines || m > kMaxLcsLines) {
+        for (auto& l : whole_replace(a, b)) out.push_back(std::move(l));
+        return tail();
+    }
 
     // LCS length DP: at(i,j) = LCS length of a[i..] and b[j..]. A single
     // contiguous (n+1)*(m+1) row-major buffer (one allocation, no pointer
@@ -68,7 +99,6 @@ std::vector<DiffLine> diff_lines(std::string_view old_text,
             at(i, j) = (a[i] == b[j]) ? at(i + 1, j + 1) + 1
                                       : std::max(at(i + 1, j), at(i, j + 1));
 
-    std::vector<DiffLine> out;
     std::size_t i = 0, j = 0;
     while (i < n && j < m) {
         if (a[i] == b[j]) {
@@ -85,7 +115,7 @@ std::vector<DiffLine> diff_lines(std::string_view old_text,
     }
     for (; i < n; ++i) out.push_back({DiffLine::Op::Del, std::string(a[i])});
     for (; j < m; ++j) out.push_back({DiffLine::Op::Add, std::string(b[j])});
-    return out;
+    return tail();
 }
 
 std::vector<DiffLine> elide_context(const std::vector<DiffLine>& diff,
