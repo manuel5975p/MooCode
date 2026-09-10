@@ -300,8 +300,8 @@ std::vector<std::string> GeminiProvider::headers() const {
 
 void GeminiProvider::set_params(const GenerationParams& p) {
     if (p.effort) cfg_.reasoning_effort = *p.effort;
-    if (p.temperature) cfg_.temperature = *p.temperature;
-    if (p.thinking) cfg_.thinking = *p.thinking;
+    if (p.temperature) cfg_.temperature = p.temperature;
+    if (p.thinking) cfg_.thinking = p.thinking;
     if (p.max_tokens) cfg_.max_tokens = *p.max_tokens;
 }
 

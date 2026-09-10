@@ -140,10 +140,11 @@ SkillEffect consume_frontmatter(std::string_view& content) {
     // Commit: skip blanks to the opening fence, then read key:value lines until
     // a closing "---". Only consume the block if it is properly terminated.
     std::string_view scan = content;
-    std::string_view l;
-    do {
-        l = trim_sv(next_line(scan));
-    } while (l.empty());  // l == "---" (opening fence)
+    // Skip blank lines up to the opening fence (l == "---").
+    for (;;) {
+        std::string_view l = trim_sv(next_line(scan));
+        if (!l.empty()) break;
+    }
 
     SkillEffect effect = SkillEffect::InjectMessage;
     bool closed = false;

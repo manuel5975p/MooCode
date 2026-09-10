@@ -3,6 +3,7 @@
 #include "agent/search_internal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <ctime>
 #include <fstream>
@@ -269,9 +270,9 @@ std::string current_month() {
 #else
     if (!::gmtime_r(&t, &tm)) return {};
 #endif
-    char buf[8];
-    std::strftime(buf, sizeof buf, "%Y-%m", &tm);
-    return buf;
+    std::array<char, 8> buf{};
+    std::strftime(buf.data(), buf.size(), "%Y-%m", &tm);
+    return buf.data();
 }
 
 // --- SearxngBackend ---------------------------------------------------------

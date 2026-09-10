@@ -1,7 +1,9 @@
 #include "agent/mentions.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <regex>
@@ -318,14 +320,13 @@ std::string file_truncate_marker(std::size_t shown, std::size_t full) {
 // "N.N MB". pre: n > 0.
 std::string human_bytes(std::size_t n) {
     if (n < 1024) return std::to_string(n) + " B";
-    if (n < 1024 * 1024) {
-        char buf[16];
-        std::snprintf(buf, sizeof buf, "%.1f KB", n / 1024.0);
-        return buf;
+    std::array<char, 16> buf{};
+    if (n < std::size_t{1024} * 1024) {
+        std::snprintf(buf.data(), buf.size(), "%.1f KB", static_cast<double>(n) / 1024.0);
+        return buf.data();
     }
-    char buf[16];
-    std::snprintf(buf, sizeof buf, "%.1f MB", n / (1024.0 * 1024));
-    return buf;
+    std::snprintf(buf.data(), buf.size(), "%.1f MB", static_cast<double>(n) / (1024.0 * 1024));
+    return buf.data();
 }
 
 // Render one attached file as a block the model can parse: a "### path"
@@ -458,7 +459,6 @@ std::vector<fs::path> expand_glob(const fs::path& base, const std::string& patte
     std::size_t idx = 0;
     std::error_code ec;
     while (idx < pat.string().size()) {
-        fs::path next_anchor;
         std::size_t i = idx;
         // Consume a literal segment.
         while (i < pat.string().size()) {

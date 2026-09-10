@@ -147,7 +147,7 @@ std::expected<std::optional<Framed>, Error> try_parse_frame(std::string_view buf
             headers.substr(pos, eol == std::string_view::npos ? headers.size() - pos : eol - pos);
         if (ci_starts_with(line, "content-length:")) {
             std::string_view v = trim_sv(line.substr(std::strlen("content-length:")));
-            constexpr std::size_t kMaxFrameBody = 256u * 1024 * 1024;  // 256 MiB
+            constexpr std::size_t kMaxFrameBody = std::size_t{256} * 1024 * 1024;  // 256 MiB
             std::size_t n = 0;
             bool any = false;
             for (char c : v) {
@@ -271,11 +271,17 @@ std::wstring win_command_line(const std::vector<std::string>& args) {
 }  // namespace
 
 ClangdSession::~ClangdSession() {
-    if (alive_ && initialized_) {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
-        if (write_message({{"jsonrpc", "2.0"}, {"id", next_id_}, {"method", "shutdown"}, {"params", nullptr}}))
-            (void)pump_until(next_id_++, deadline);
-        (void)notify("exit", nlohmann::json::object());
+    // Destructors are noexcept: swallow any nlohmann/JSON throw from the
+    // best-effort shutdown handshake and still reap the child.
+    try {
+        if (alive_ && initialized_) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+            if (write_message({{"jsonrpc", "2.0"}, {"id", next_id_}, {"method", "shutdown"}, {"params", nullptr}}))
+                (void)pump_until(next_id_++, deadline);
+            (void)notify("exit", nlohmann::json::object());
+        }
+    } catch (...) {
+        alive_ = false;  // the session is unusable; fall through to reaping
     }
     kill_and_reap();
 }
@@ -367,14 +373,14 @@ std::expected<void, Error> ClangdSession::spawn() {
     static std::once_flag sigpipe_once;
     std::call_once(sigpipe_once, [] { ::signal(SIGPIPE, SIG_IGN); });
 
-    int in_pipe[2];   // parent -> child stdin
-    int out_pipe[2];  // child stdout -> parent
-    if (::pipe(in_pipe) != 0)
-        return std::unexpected(Error{.msg = std::string("pipe: ") + std::strerror(errno), .code = 0});
-    if (::pipe(out_pipe) != 0) {
+    std::array<int, 2> in_pipe{};   // parent -> child stdin
+    std::array<int, 2> out_pipe{};  // child stdout -> parent
+    if (::pipe(in_pipe.data()) != 0)
+        return std::unexpected(Error{.msg = "pipe: " + errno_str(errno), .code = 0});
+    if (::pipe(out_pipe.data()) != 0) {
         ::close(in_pipe[0]);
         ::close(in_pipe[1]);
-        return std::unexpected(Error{.msg = std::string("pipe: ") + std::strerror(errno), .code = 0});
+        return std::unexpected(Error{.msg = "pipe: " + errno_str(errno), .code = 0});
     }
 
     // Build argv in the parent so the child path is async-signal-safe (no STL).
@@ -387,7 +393,7 @@ std::expected<void, Error> ClangdSession::spawn() {
     if (pid < 0) {
         ::close(in_pipe[0]); ::close(in_pipe[1]);
         ::close(out_pipe[0]); ::close(out_pipe[1]);
-        return std::unexpected(Error{.msg = std::string("fork: ") + std::strerror(errno), .code = 0});
+        return std::unexpected(Error{.msg = "fork: " + errno_str(errno), .code = 0});
     }
     if (pid == 0) {
         ::setpgid(0, 0);
@@ -496,7 +502,7 @@ std::expected<void, Error> ClangdSession::write_raw(const char* data, std::size_
         if (n < 0) {
             if (errno == EINTR) continue;
             alive_ = false;
-            return std::unexpected(Error{.msg = std::string("clangd write failed: ") + std::strerror(errno), .code = 0});
+            return std::unexpected(Error{.msg = "clangd write failed: " + errno_str(errno), .code = 0});
         }
         off += static_cast<std::size_t>(n);
     }
@@ -520,18 +526,18 @@ ClangdSession::ReadStep ClangdSession::read_step(int slice_ms, std::string& err)
     int pr = ::poll(&pfd, 1, slice_ms);
     if (pr < 0) {
         if (errno == EINTR) return ReadStep::Timeout;
-        err = std::string("clangd poll: ") + std::strerror(errno);
+        err = "clangd poll: " + errno_str(errno);
         return ReadStep::Error;
     }
     if (pr == 0) return ReadStep::Timeout;
 
-    std::array<char, 8192> buf;
+    std::array<char, 8192> buf{};
     ssize_t n = ::read(from_child_, buf.data(), buf.size());
     if (n == 0) return ReadStep::Eof;
     if (n < 0) {
         if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
             return ReadStep::Timeout;
-        err = std::string("clangd read: ") + std::strerror(errno);
+        err = "clangd read: " + errno_str(errno);
         return ReadStep::Error;
     }
     in_buf_.append(buf.data(), static_cast<std::size_t>(n));
@@ -601,7 +607,7 @@ std::expected<nlohmann::json, Error> ClangdSession::pump_until(
             nlohmann::json msg = std::move((*framed)->msg);
             in_buf_.erase(0, (*framed)->consumed);
 
-            static const bool debug = std::getenv("MOOCODE_LSP_DEBUG") != nullptr;
+            static const bool debug = get_env("MOOCODE_LSP_DEBUG") != nullptr;
             if (debug) {
                 std::string tag = msg.value("method", std::string());
                 if (tag.empty() && msg.contains("id")) tag = "response#" + msg["id"].dump();

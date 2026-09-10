@@ -65,7 +65,7 @@ ThemeResult parse_theme(std::string_view arg) {
                   "' — try: default, mono, vivid, none";
         return r;
     }
-    r.theme = *t;
+    r.theme = t;
     return r;
 }
 

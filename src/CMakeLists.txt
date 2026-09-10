@@ -71,8 +71,9 @@ target_link_libraries(agent_diff PUBLIC agent_types)
 # --- agent_persist: ~/.moo TOML store (confines toml.hpp to one TU) -------
 add_library(agent_persist STATIC agent/persist.cpp)
 target_include_directories(agent_persist
-                           PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
-                           PRIVATE ${PROJECT_SOURCE_DIR})  # for "toml.hpp"
+                           PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# toml.hpp is third-party: SYSTEM keeps its warnings/analyzer findings out.
+target_include_directories(agent_persist SYSTEM PRIVATE ${PROJECT_SOURCE_DIR})
 target_link_libraries(agent_persist PUBLIC agent_types)
 
 # --- agent_onboarding: first-run setup wizard (settings.toml + credentials) ---

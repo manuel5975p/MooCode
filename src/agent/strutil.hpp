@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace moocode {
@@ -21,10 +22,22 @@ inline std::string to_lower(std::string_view s) {
     return out;
 }
 
+// Raw environment lookup. Single sanctioned std::getenv call site: the process
+// never mutates its environment after startup, so the read is race-free.
+// pre: name nonnull. post: nullptr when unset; pointer valid for process life.
+inline const char* get_env(const char* name) {
+    return std::getenv(name);  // NOLINT(concurrency-mt-unsafe)
+}
+
 // $name when set AND non-empty, else `def`. An empty env var counts as unset.
 inline std::string env_or(const char* name, std::string def) {
-    const char* v = std::getenv(name);
+    const char* v = get_env(name);
     return v && *v ? std::string(v) : std::move(def);
+}
+
+// Thread-safe text for `err` (an errno value), e.g. "No such file or directory".
+inline std::string errno_str(int err) {
+    return std::generic_category().message(err);
 }
 
 // Cap `s` to `max` bytes, appending `marker(shown, full)` when truncation

@@ -118,7 +118,7 @@ ThinkSplitter::Parts ThinkSplitter::flush() {
 void parse_sse_chunk(std::string& buffer, std::vector<std::string>& out,
                      bool& done) {
     std::size_t start = 0;
-    for (std::size_t nl; (nl = buffer.find('\n', start)) != std::string::npos;) {
+    for (std::size_t nl = 0; (nl = buffer.find('\n', start)) != std::string::npos;) {
         std::string_view line(buffer.data() + start, nl - start);
         start = nl + 1;
         if (!line.empty() && line.back() == '\r') line.remove_suffix(1);

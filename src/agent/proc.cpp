@@ -1,5 +1,7 @@
 #include "agent/proc.hpp"
 
+#include "agent/strutil.hpp"  // errno_str
+
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -17,6 +19,7 @@
 
 #include <thread>
 #else
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
@@ -123,7 +126,7 @@ std::wstring build_command_line(const std::vector<std::string>& argv) {
 
 CaptureResult spawn_capture(const std::vector<std::string>& argv,
                             const fs::path& cwd, int timeout_secs,
-                            std::size_t max_bytes) {
+                            std::size_t max_bytes, bool merge_stderr = true) {
     CaptureResult r;
 
     // One inheritable pipe: child writes both stdout and stderr, parent reads.
@@ -147,11 +150,17 @@ CaptureResult spawn_capture(const std::vector<std::string>& argv,
     std::wstring cmdline = build_command_line(argv);
     std::wstring cwd_w = cwd.empty() ? std::wstring() : cwd.wstring();
 
+    // stderr either joins the pipe or goes to NUL (raw-capture callers).
+    HANDLE nul = INVALID_HANDLE_VALUE;
+    if (!merge_stderr)
+        nul = ::CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa,
+                            OPEN_EXISTING, 0, nullptr);
+
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES;
     si.hStdOutput = wr;
-    si.hStdError = wr;
+    si.hStdError = (!merge_stderr && nul != INVALID_HANDLE_VALUE) ? nul : wr;
     si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION pi{};
     // CREATE_SUSPENDED so we can assign to the job before any child spawns;
@@ -161,6 +170,7 @@ CaptureResult spawn_capture(const std::vector<std::string>& argv,
         CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr,
         cwd_w.empty() ? nullptr : cwd_w.c_str(), &si, &pi);
     ::CloseHandle(wr);  // parent never writes the child's stdin-merge pipe
+    if (nul != INVALID_HANDLE_VALUE) ::CloseHandle(nul);
     if (!ok) {
         ::CloseHandle(rd);
         if (job) ::CloseHandle(job);
@@ -220,29 +230,32 @@ CaptureResult spawn_capture(const std::vector<std::string>& argv,
 
 CaptureResult spawn_capture(const std::vector<std::string>& argv,
                             const fs::path& cwd, int timeout_secs,
-                            std::size_t max_bytes) {
+                            std::size_t max_bytes, bool merge_stderr = true) {
     CaptureResult r;
 
-    int pipefd[2];
-    if (::pipe(pipefd) != 0) {
-        r.error = std::string("pipe: ") + std::strerror(errno);
+    std::array<int, 2> pipefd{-1, -1};
+    if (::pipe(pipefd.data()) != 0) {
+        r.error = "pipe: " + errno_str(errno);
         return r;
     }
 
     // Build the exec argv in the parent: with tool calls now running on parallel
     // threads (see Agent::run), forks happen concurrently, and the post-fork
     // child must touch only async-signal-safe calls — no heap allocation. The
-    // char* point into `argv`'s strings, valid in the forked child's copy.
+    // char* point into `args`'s strings, valid in the forked child's copy.
+    // execvp wants char* const[], so the strings are copied here rather than
+    // const_cast away the caller's constness.
+    std::vector<std::string> args(argv.begin(), argv.end());
     std::vector<char*> cargv;
-    cargv.reserve(argv.size() + 1);
-    for (const std::string& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    cargv.reserve(args.size() + 1);
+    for (std::string& a : args) cargv.push_back(a.data());
     cargv.push_back(nullptr);
 
     pid_t pid = ::fork();
     if (pid < 0) {
         ::close(pipefd[0]);
         ::close(pipefd[1]);
-        r.error = std::string("fork: ") + std::strerror(errno);
+        r.error = "fork: " + errno_str(errno);
         return r;
     }
 
@@ -253,7 +266,15 @@ CaptureResult spawn_capture(const std::vector<std::string>& argv,
             if (::chdir(cwd.c_str()) != 0) _exit(126);
         }
         ::dup2(pipefd[1], STDOUT_FILENO);
-        ::dup2(pipefd[1], STDERR_FILENO);
+        if (merge_stderr) {
+            ::dup2(pipefd[1], STDERR_FILENO);
+        } else {
+            int nul = ::open("/dev/null", O_WRONLY);
+            if (nul >= 0) {
+                ::dup2(nul, STDERR_FILENO);
+                ::close(nul);
+            }
+        }
         ::close(pipefd[0]);
         ::close(pipefd[1]);
         ::execvp(cargv[0], cargv.data());
@@ -289,7 +310,7 @@ CaptureResult spawn_capture(const std::vector<std::string>& argv,
             timed_out = true;
             break;
         }
-        std::array<char, 4096> buf;
+        std::array<char, 4096> buf{};
         ssize_t n = ::read(pipefd[0], buf.data(), buf.size());
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -332,6 +353,33 @@ CaptureResult spawn_capture(const std::vector<std::string>& argv,
 #endif
 
 }  // namespace
+
+std::expected<std::string, Error> capture_raw(
+    const std::vector<std::string>& argv, std::size_t max_bytes) {
+    if (argv.empty())
+        return std::unexpected(Error{.msg = "capture_raw: empty argv", .code = 0});
+
+    constexpr int kRawTimeoutSecs = 10;
+    CaptureResult r = spawn_capture(argv, fs::path(), kRawTimeoutSecs, max_bytes,
+                                    /*merge_stderr=*/false);
+    if (r.error) return std::unexpected(Error{.msg = *r.error, .code = 0});
+    if (r.timed_out)
+        return std::unexpected(Error{.msg = argv[0] + ": timed out", .code = 0});
+    if (r.truncated)
+        return std::unexpected(Error{
+            .msg = argv[0] + ": output exceeded " + std::to_string(max_bytes) +
+                   " bytes",
+            .code = 0});
+    if (r.signaled)
+        return std::unexpected(Error{
+            .msg = argv[0] + ": killed by signal " + std::to_string(r.term_sig),
+            .code = 0});
+    if (!r.exited || r.exit_code != 0)
+        return std::unexpected(Error{
+            .msg = argv[0] + ": exit code " + std::to_string(r.exit_code),
+            .code = 0});
+    return std::move(r.out);
+}
 
 std::expected<std::string, Error> run_process(
     const std::vector<std::string>& argv, const fs::path& cwd, int timeout_secs,

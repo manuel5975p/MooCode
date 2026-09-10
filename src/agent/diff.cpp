@@ -69,10 +69,12 @@ std::vector<DiffLine> diff_lines(std::string_view old_text,
     for (std::size_t k = 0; k < prefix; ++k)
         out.push_back({DiffLine::Op::Context, std::string(a_all[k])});
 
-    const std::vector<std::string_view> a(a_all.begin() + prefix,
-                                          a_all.end() - suffix);
-    const std::vector<std::string_view> b(b_all.begin() + prefix,
-                                          b_all.end() - suffix);
+    const std::vector<std::string_view> a(
+        a_all.begin() + static_cast<std::ptrdiff_t>(prefix),
+        a_all.end() - static_cast<std::ptrdiff_t>(suffix));
+    const std::vector<std::string_view> b(
+        b_all.begin() + static_cast<std::ptrdiff_t>(prefix),
+        b_all.end() - static_cast<std::ptrdiff_t>(suffix));
     auto tail = [&] {
         for (std::size_t k = a_all.size() - suffix; k < a_all.size(); ++k)
             out.push_back({DiffLine::Op::Context, std::string(a_all[k])});

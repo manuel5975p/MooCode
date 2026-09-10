@@ -1,6 +1,7 @@
 #include "agent/tui.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -34,6 +35,7 @@
 #include "agent/openai_provider.hpp"  // openai_model_likely_reasoning
 #include "agent/persist.hpp"
 #include "agent/platform.hpp"          // user_home, console helpers
+#include "agent/proc.hpp"              // capture_raw (clipboard image, no shell)
 #include "agent/provider_factory.hpp"  // ProviderConnection, make_provider
 #include "agent/question_tool.hpp"
 #include "agent/strutil.hpp"           // to_lower
@@ -71,7 +73,7 @@ std::string collapse_newlines(std::string_view s) {
 // Full-fidelity text for the detail pane: sanitized like everything entering
 // the render model, middle-elided only past kFullCap so memory stays bounded
 // while both ends survive. Newlines are preserved.
-constexpr std::size_t kFullCap = 128 * 1024;
+constexpr std::size_t kFullCap = std::size_t{128} * 1024;
 std::string full_text(std::string_view s) {
     return sanitize_tui_text(elide_middle(s, kFullCap, (kFullCap - 3) / 2));
 }
@@ -129,8 +131,8 @@ const std::string& busy_word(std::size_t n) {
 // ASCII spinner glyph cycling | / - \ with the frame counter (4 even-width
 // frames so the rotation reads smoothly).
 const char* spin_glyph(std::size_t frame) {
-    static const char* g[] = {"|", "/", "-", "\\"};
-    return g[frame % 4];
+    static constexpr std::array<const char*, 4> g = {"|", "/", "-", "\\"};
+    return g[frame % g.size()];
 }
 
 // One-line description of a mouse event for the --debug status chip:
@@ -561,24 +563,25 @@ std::pair<std::string, std::string> running_subagent_tool(
 
 std::string human_tokens(int n) {
     if (n < 1000) return std::to_string(n);
-    char buf[32];
-    std::snprintf(buf, sizeof buf, "%.1fk", n / 1000.0);
-    return buf;
+    std::array<char, 32> buf{};
+    std::snprintf(buf.data(), buf.size(), "%.1fk", n / 1000.0);
+    return buf.data();
 }
 
 // --- human_duration ---------------------------------------------------------
 
 std::string human_duration(std::chrono::milliseconds ms) {
     const long long n = ms.count();
-    char buf[32];
+    std::array<char, 32> buf{};
     if (n < 1000) return std::to_string(n) + "ms";
     if (n < 60'000) {
-        std::snprintf(buf, sizeof buf, "%.1fs", static_cast<double>(n) / 1000.0);
-        return buf;
+        std::snprintf(buf.data(), buf.size(), "%.1fs",
+                      static_cast<double>(n) / 1000.0);
+        return buf.data();
     }
-    std::snprintf(buf, sizeof buf, "%lldm%02llds", n / 60'000,
+    std::snprintf(buf.data(), buf.size(), "%lldm%02llds", n / 60'000,
                   (n % 60'000) / 1000);
-    return buf;
+    return buf.data();
 }
 
 // --- tool_arg_summary ---------------------------------------------------------
@@ -587,9 +590,9 @@ std::string tool_arg_summary(std::string_view arguments_json) {
     // Keys tried in order; the first non-empty string value wins. Target-like
     // keys come first so file tools show their path, then command/content-like
     // ones. A non-object / unparseable / no-match falls back to the raw args.
-    static constexpr std::string_view kKeys[] = {
-        "path", "file", "cmd", "command", "url", "query",
-        "prompt", "question", "symbol", "pattern", "name"};
+    static constexpr auto kKeys = std::to_array<std::string_view>(
+        {"path", "file", "cmd", "command", "url", "query",
+         "prompt", "question", "symbol", "pattern", "name"});
     if (auto j = json::parse(arguments_json); j && j->is_object())
         for (std::string_view k : kKeys)
             if (auto v = json::get_string_opt(*j, k); v && *v && !(*v)->empty())
@@ -1538,9 +1541,9 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
 #else
         if (!::gmtime_r(&t, &tm)) return std::string();
 #endif
-        char buf[32];
-        std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
-        return std::string(buf);
+        std::array<char, 32> buf{};
+        std::strftime(buf.data(), buf.size(), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        return std::string(buf.data());
     };
 
     // Mint a conversation file path that is not already taken. Ids carry a
@@ -1946,7 +1949,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     std::thread refresher([&] {
         while (ui_alive.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
-            bool running;
+            bool running = false;
             {
                 std::lock_guard lk(state_mtx);
                 running = state.running();
@@ -2042,18 +2045,19 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // Try to read an image from the system clipboard (wl-paste → xclip).
     // Returns the ImageBlock on success. Best-effort; errors are ignored.
     auto read_clipboard_image = []() -> std::optional<ImageBlock> {
-        auto try_tool = [](const char* cmd) -> std::optional<std::string> {
-            FILE* p = popen(cmd, "r");
-            if (!p) return std::nullopt;
-            std::string data;
-            char buf[65536];
-            while (std::size_t nr = std::fread(buf, 1, sizeof buf, p))
-                data.append(buf, nr);
-            int rc = pclose(p);
-            return (rc == 0 && !data.empty()) ? std::optional(data) : std::nullopt;
+        // No shell: capture_raw exec's argv directly and returns the exact
+        // stdout bytes, so the PNG survives verbatim. 64 MiB cap.
+        constexpr std::size_t kClipCap = std::size_t{64} * 1024 * 1024;
+        auto try_tool =
+            [](std::vector<std::string> argv) -> std::optional<std::string> {
+            auto out = capture_raw(argv, kClipCap);
+            if (!out || out->empty()) return std::nullopt;
+            return std::move(*out);
         };
-        auto raw = try_tool("wl-paste --type image/png 2>/dev/null");
-        if (!raw) raw = try_tool("xclip -selection clipboard -t image/png -o 2>/dev/null");
+        auto raw = try_tool({"wl-paste", "--type", "image/png"});
+        if (!raw)
+            raw = try_tool(
+                {"xclip", "-selection", "clipboard", "-t", "image/png", "-o"});
         if (!raw) return std::nullopt;
         // Detect media type from magic bytes.
         std::string mt = "image/png";
@@ -2243,7 +2247,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                                            .kind = info.provider,
                                            .base_url = info.base_url,
                                            .model = chosen,
-                                           .models = all});
+                                           .models = all,
+                                           .blacklist = {},
+                                           .thinking = -1,
+                                           .drop_thinking_tag = false,
+                                           .thinking_type = "enabled",
+                                           .temperature = -1});
             }
             info.profile = profile_name;
             if (!info.home.empty()) {
@@ -2259,8 +2268,16 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                         break;
                     }
                 if (!merged)
-                    s.profiles.push_back(Profile{profile_name, info.provider,
-                                                 info.base_url, chosen, all});
+                    s.profiles.push_back(Profile{.name = profile_name,
+                                                 .kind = info.provider,
+                                                 .base_url = info.base_url,
+                                                 .model = chosen,
+                                                 .models = all,
+                                                 .blacklist = {},
+                                                 .thinking = -1,
+                                                 .drop_thinking_tag = false,
+                                                 .thinking_type = "enabled",
+                                                 .temperature = -1});
                 save_settings(info.home, s);
             }
         }
@@ -2466,7 +2483,12 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                                          .kind = info.provider,
                                          .base_url = info.base_url,
                                          .model = info.model,
-                                         .models = {info.model}});
+                                         .models = {info.model},
+                                         .blacklist = {},
+                                         .thinking = -1,
+                                         .drop_thinking_tag = false,
+                                         .thinking_type = "enabled",
+                                         .temperature = -1});
                          } else {
                              slot->kind = info.provider;
                              slot->base_url = info.base_url;
@@ -2480,8 +2502,16 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                          credentials[name] = info.api_key;
                          if (!info.home.empty()) {
                              Settings s = load_settings(info.home);
-                             Profile np{name, info.provider, info.base_url,
-                                        info.model, {info.model}};
+                             Profile np{.name = name,
+                                        .kind = info.provider,
+                                        .base_url = info.base_url,
+                                        .model = info.model,
+                                        .models = {info.model},
+                                        .blacklist = {},
+                                        .thinking = -1,
+                                        .drop_thinking_tag = false,
+                                        .thinking_type = "enabled",
+                                        .temperature = -1};
                              bool merged = false;
                              for (Profile& p : s.profiles)
                                  if (p.name == name) {
@@ -2732,7 +2762,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
     // state_mtx.
     auto truncate_to = [&](std::size_t idx, const std::string& txt) {
         Conversation trunc(agent.history().begin(),
-                           agent.history().begin() + idx);
+                           agent.history().begin() +
+                               static_cast<std::ptrdiff_t>(idx));
         agent.set_history(trunc);
         {
             std::lock_guard lk(state_mtx);
@@ -2750,7 +2781,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             return;
         }
 
-        bool busy;
+        bool busy = false;
         {
             std::lock_guard lk(state_mtx);
             busy = state.running();
@@ -2946,7 +2977,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
                     parts.push_back(ContentPart{
                         "The user pasted this image from their clipboard.",
                         std::nullopt});
-                    parts.push_back(ContentPart{"", std::move(*img)});
+                    parts.push_back(ContentPart{"", std::move(img)});
                     worker.submit({WorkItem::Prompt, "/paste", std::move(parts)});
                 }
                 input_content.clear();
@@ -2976,8 +3007,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         // when busy the result is enqueued for the next turn(s).
         MentionOptions mopt;
         mopt.root = std::filesystem::path(info.cwd);
-        mopt.max_file_bytes = 64 * 1024;
-        mopt.max_total_bytes = 256 * 1024;
+        mopt.max_file_bytes = std::size_t{64} * 1024;
+        mopt.max_total_bytes = std::size_t{256} * 1024;
         mopt.max_files = 32;
         auto expansion = expand_mentions(line, mopt);
 
@@ -3298,9 +3329,9 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             if (gp.effort) ctl += "e:" + *gp.effort + " ";
             if (gp.thinking) ctl += *gp.thinking ? "think:on " : "think:off ";
             if (gp.temperature) {
-                char buf[32];
-                std::snprintf(buf, sizeof buf, "%g", *gp.temperature);
-                ctl += "t:" + std::string(buf) + " ";
+                std::array<char, 32> buf{};
+                std::snprintf(buf.data(), buf.size(), "%g", *gp.temperature);
+                ctl += "t:" + std::string(buf.data()) + " ";
             }
             live_provider = std::string(pv.wire_format());
             live_model = pv.model();
@@ -4302,8 +4333,8 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         // @-completion / model-completion popup: navigate / accept / dismiss.
         // Other keys fall through to the Input so typing keeps filtering.
         {
-            bool popup;
-            bool is_model;
+            bool popup = false;
+            bool is_model = false;
             { std::lock_guard lk(state_mtx);
               popup = model_complete.active || complete.active;
               is_model = model_complete.active; }
@@ -4445,7 +4476,7 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
         }
         // Escape while the agent is running: interrupt the streaming LLM call.
         if (e == Event::Escape) {
-            bool running;
+            bool running = false;
             {
                 std::lock_guard lk(state_mtx);
                 running = state.running();
@@ -4538,19 +4569,25 @@ int run_tui(Agent& agent, Permissions* perms, TuiInfo info,
             switch (wheel_target(e.mouse().x, e.mouse().y, tw, th, aw, dh)) {
                 case Pane::Chat:
                     chat_scroll = std::clamp(
-                        chat_scroll + dir * frac(kWheelLines, chat_ch, chat_view),
+                        chat_scroll +
+                            static_cast<float>(dir) *
+                                frac(kWheelLines, chat_ch, chat_view),
                         0.f, 1.f);
                     follow_chat = false;
                     break;
                 case Pane::Activity:
                     activity_scroll = std::clamp(
-                        activity_scroll + dir * frac(kWheelLines, act_ch, act_view),
+                        activity_scroll +
+                            static_cast<float>(dir) *
+                                frac(kWheelLines, act_ch, act_view),
                         0.f, 1.f);
                     follow_act = false;
                     break;
                 case Pane::Detail:
                     detail_scroll = std::clamp(
-                        detail_scroll + dir * frac(kWheelLines, detail_ch, detail_view),
+                        detail_scroll +
+                            static_cast<float>(dir) *
+                                frac(kWheelLines, detail_ch, detail_view),
                         0.f, 1.f);
                     break;
                 case Pane::None:

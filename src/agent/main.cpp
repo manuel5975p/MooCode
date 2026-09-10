@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -47,6 +48,7 @@
 #include "agent/openai_provider.hpp"
 #include "agent/permissions.hpp"
 #include "agent/platform.hpp"
+#include "agent/proc.hpp"
 #include "agent/provider_factory.hpp"
 #include "agent/question_tool.hpp"
 #include "agent/strutil.hpp"
@@ -65,7 +67,7 @@ using namespace moocode;
 
 // True if an executable named `prog` is found on $PATH. No process spawn.
 bool program_on_path(std::string_view prog) {
-    const char* path = std::getenv("PATH");
+    const char* path = get_env("PATH");
     if (!path || !*path) return false;
     std::string_view sv(path);
     std::size_t start = 0;
@@ -137,24 +139,18 @@ sensible default, state it, proceed. Design/plan tasks -> ask up front.
 Final report (the tool-free message): what changed, what you verified and
 how, what remains or is known broken. Terse concise. e.g. "X now Y, no longer Z", "fix B by check in f".)";
 
-// Capture a command's stdout via popen, trimmed of trailing newlines.
-// Best-effort: empty string on failure. pre: cmd nonnull.
-std::string capture(const char* cmd) {
-    std::string out;
-#ifdef _WIN32
-    FILE* p = ::_popen(cmd, "r");
-#else
-    FILE* p = ::popen(cmd, "r");
-#endif
-    if (!p) return out;
-    char buf[4096];
-    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, p)) > 0;)
-        out.append(buf, n);
-#ifdef _WIN32
-    ::_pclose(p);
-#else
-    ::pclose(p);
-#endif
+// Capture a short-lived command's output, trimmed of trailing newlines. No
+// shell: argv is exec'd directly. Best-effort — empty on spawn failure, timeout
+// or a nonzero exit. pre: argv nonempty.
+std::string capture(const std::vector<std::string>& argv) {
+    auto r = run_process(argv, std::filesystem::current_path(),
+                         /*timeout_secs=*/5, std::size_t{64} * 1024);
+    if (!r) return {};
+    std::string out = std::move(*r);
+    // run_process appends an exit trailer; only a clean exit is usable output.
+    constexpr std::string_view kOk = "\n[exit code: 0]";
+    if (!out.ends_with(kOk)) return {};
+    out.resize(out.size() - kOk.size());
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
         out.pop_back();
     return out;
@@ -163,11 +159,11 @@ std::string capture(const char* cmd) {
 // OS description: Windows `ver`, macOS `sw_vers`, else `uname -a`.
 std::string sysinfo() {
 #if defined(_WIN32)
-    return capture("ver");
+    return capture({"cmd", "/c", "ver"});  // `ver` is a cmd.exe builtin
 #elif defined(__APPLE__)
-    return capture("sw_vers");
+    return capture({"sw_vers"});
 #else
-    return capture("uname -a");
+    return capture({"uname", "-a"});
 #endif
 }
 
@@ -180,9 +176,9 @@ std::string now_string() {
 #else
     if (!::localtime_r(&t, &tm)) return {};
 #endif
-    char buf[64];
-    std::strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", &tm);
-    return buf;
+    std::array<char, 64> buf{};
+    std::strftime(buf.data(), buf.size(), "%Y-%m-%d %H:%M:%S", &tm);
+    return buf.data();
 }
 
 // Terse project-kind label from root marker files (non-recursive). Intended to
@@ -222,11 +218,11 @@ std::string detect_project(const std::filesystem::path& dir) {
 std::string file_listing(const std::filesystem::path& dir) {
     namespace fs = std::filesystem;
     constexpr std::size_t kMax = 10;
-    constexpr std::string_view kPriority[] = {
+    constexpr auto kPriority = std::to_array<std::string_view>({
         "README.md",  "AGENTS.md", "CMakeLists.txt", "conanfile.py",
         "src/",       "include/",  "tests/",         "test/",
         "run.sh",     "start.sh",  "play.sh",
-    };
+    });
     std::vector<std::string> names;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(dir, ec)) {
@@ -237,7 +233,7 @@ std::string file_listing(const std::filesystem::path& dir) {
     std::ranges::sort(names);
     auto rank = [&](const std::string& n) {
         const auto it = std::ranges::find(kPriority, n);
-        return static_cast<std::size_t>(it - std::begin(kPriority));
+        return static_cast<std::size_t>(it - kPriority.begin());
     };
     std::ranges::stable_sort(names, {}, rank);  // stable: ties keep name order
     if (names.size() > kMax) names.resize(kMax);
@@ -326,6 +322,15 @@ po::parser make_parser() {
     return p;
 }
 
+// Last parsed value of a typed option. po::value keeps its scalars in a union,
+// so read them through the library's typed iterators instead of the members.
+// pre: `o` was declared with type `T`. post: `def` when `o` holds no value.
+template <po::value_type T>
+po::vt2type<T> opt_value(const po::option& o, po::vt2type<T> def) {
+    if (o.size() == 0) return def;
+    return o.to_vector<T>().back();
+}
+
 std::string read_all_stdin() {
     std::ostringstream ss;
     ss << std::cin.rdbuf();
@@ -339,14 +344,14 @@ Approval tty_approve(const ToolCall& tc) {
     std::fprintf(stderr, "\n  approve %s(%s)?\n  [y]once [s]session [a]always [N]deny ",
                  tc.name.c_str(), tc.arguments_json.c_str());
     std::fflush(stderr);
-    FILE* tty = std::fopen(kConsoleInDevice, "r");
+    std::unique_ptr<FILE, decltype(&std::fclose)> tty(
+        std::fopen(kConsoleInDevice, "r"), &std::fclose);
     if (!tty) return Approval::Deny;
-    int c = std::fgetc(tty);
+    const int c = std::fgetc(tty.get());
     // Drain the rest of the line so a trailing newline can't auto-answer the
     // next prompt (matters when several tool calls are gated in one run).
-    for (int d = c; d != '\n' && d != EOF; d = std::fgetc(tty)) {
+    for (int d = c; d != '\n' && d != EOF; d = std::fgetc(tty.get())) {
     }
-    std::fclose(tty);
     switch (c) {
         case 'y': case 'Y': return Approval::Once;
         case 's': case 'S': return Approval::Session;
@@ -365,7 +370,7 @@ std::string search_quota_path(const std::string& home) {
 // deletes the originals; only fills in a not-yet-present target.
 void migrate_legacy(const std::string& home) {
     if (home.empty()) return;
-    const char* h = std::getenv("HOME");
+    const char* h = get_env("HOME");
     if (!h) return;
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -408,9 +413,11 @@ SearchConfig search_config_from_env(const std::string& home) {
             cfg.zai_api_key = it->second;
     }
     cfg.quota_file = search_quota_path(home);
-    if (const char* lim = std::getenv("TAVILY_MONTHLY_LIMIT")) {
-        const int n = std::atoi(lim);
-        if (n > 0) cfg.tavily_monthly_limit = n;
+    if (const char* lim = get_env("TAVILY_MONTHLY_LIMIT")) {
+        char* end = nullptr;
+        const long n = std::strtol(lim, &end, 10);
+        if (end != lim && *end == '\0' && n > 0)
+            cfg.tavily_monthly_limit = static_cast<int>(n);
     }
     return cfg;
 }
@@ -482,8 +489,8 @@ int main(int argc, char** argv) {
     // key, and probing its model list. It persists settings.toml + credentials.toml
     // under `home`, so the resolution below transparently adopts the result.
     {
-        const char* env_key = std::getenv("LLM_API_KEY");
-        const char* env_base = std::getenv("LLM_BASE_URL");
+        const char* env_key = get_env("LLM_API_KEY");
+        const char* env_base = get_env("LLM_BASE_URL");
         const bool has_explicit_config =
             cli["base-url"].was_set() || cli["api-key"].was_set() ||
             cli["profile"].was_set() || (env_key && *env_key) ||
@@ -507,7 +514,7 @@ int main(int argc, char** argv) {
     };
     auto pick = [&](const char* opt, const char* env) -> Picked {
         if (cli[opt].was_set()) return {cli[opt].get().string, true};
-        const char* e = std::getenv(env);
+        const char* e = get_env(env);
         if (e && *e) return {std::string(e), true};
         return {{}, false};
     };
@@ -547,7 +554,7 @@ int main(int argc, char** argv) {
         for (const Profile& p : settings.profiles)
             if (p.name == active_profile) { profile = &p; break; }
 
-    ProviderKind kind;
+    ProviderKind kind = ProviderKind::OpenAI;  // every branch below overwrites it
     if (auto preset = lookup_preset(provider_str)) {
         // A preset fills base_url/model only when the user didn't set them
         // explicitly via flag/env — but it overrides settings.toml values.
@@ -650,21 +657,22 @@ int main(int argc, char** argv) {
     normalize_base_url(base_url);
 
     // max_tokens (Anthropic output cap): flag > settings > built-in default.
-    int max_tokens = cli["max-tokens"].was_set() ? cli["max-tokens"].get().i32
-                                                 : settings.max_tokens;
+    int max_tokens = cli["max-tokens"].was_set()
+                         ? opt_value<po::i32>(cli["max-tokens"], 0)
+                         : settings.max_tokens;
 
     // max_iterations: flag > settings > unlimited. A non-positive value (the
     // default, or --max-iters 0) leaves the backstop disabled (nullopt).
     std::optional<std::uint32_t> max_iterations;
     if (cli["max-iters"].was_set()) {
-        if (int v = cli["max-iters"].get().i32; v > 0)
+        if (int v = opt_value<po::i32>(cli["max-iters"], 0); v > 0)
             max_iterations = static_cast<std::uint32_t>(v);
     } else if (settings.max_iterations > 0) {
         max_iterations = static_cast<std::uint32_t>(settings.max_iterations);
     }
     // context_window (TUI gauge): flag > settings > 0.
     int context_window = cli["context-window"].was_set()
-                             ? cli["context-window"].get().i32
+                             ? opt_value<po::i32>(cli["context-window"], 0)
                              : settings.context_window;
 
     http::global_init();
@@ -692,7 +700,7 @@ int main(int argc, char** argv) {
     // default-on). The tools only ever see the AND-ed result.
     const bool rtk_available = program_on_path("rtk");
     int rtk_cfg = settings.rtk;  // -1 unset / 0 off / 1 on
-    if (const char* e = std::getenv("MOOCODE_RTK"); e && *e)
+    if (const char* e = get_env("MOOCODE_RTK"); e && *e)
         rtk_cfg = (std::string_view(e) == "0" || std::string_view(e) == "false") ? 0 : 1;
     if (cli["rtk"].was_set()) rtk_cfg = 1;
     if (cli["no-rtk"].was_set()) rtk_cfg = 0;
@@ -703,7 +711,7 @@ int main(int argc, char** argv) {
     // Default off keeps the agent confined to the project root unless relaxed.
     auto resolve_perm = [](int setting, const char* env, bool flag_set) {
         int cfg = setting;  // -1 unset / 0 off / 1 on
-        if (const char* e = std::getenv(env); e && *e)
+        if (const char* e = get_env(env); e && *e)
             cfg = (std::string_view(e) == "0" || std::string_view(e) == "false") ? 0 : 1;
         if (flag_set) cfg = 1;
         return cfg == 1;  // unset (-1) => off
@@ -797,8 +805,11 @@ int main(int argc, char** argv) {
             ccfg.compile_commands_dir = opts.root / "build";
         else if (std::filesystem::exists(opts.root / "compile_commands.json", cec))
             ccfg.compile_commands_dir = opts.root;
-        int wait_ms = std::atoi(env_or("CLANGD_INDEX_WAIT_MS", "0").c_str());
-        if (wait_ms > 0) ccfg.index_wait_ms = wait_ms;
+        const std::string wait = env_or("CLANGD_INDEX_WAIT_MS", "0");
+        char* end = nullptr;
+        const long wait_ms = std::strtol(wait.c_str(), &end, 10);
+        if (end != wait.c_str() && *end == '\0' && wait_ms > 0)
+            ccfg.index_wait_ms = static_cast<int>(wait_ms);
     }
     auto clangd_session = make_clangd_session(ccfg);
     register_clangd_tools(reg, clangd_session, opts);
@@ -825,7 +836,7 @@ int main(int argc, char** argv) {
             gp.effort = effort;
     }
     if (cli["temperature"].was_set())
-        gp.temperature = cli["temperature"].get().f64;
+        gp.temperature = opt_value<po::f64>(cli["temperature"], 0.0);
     else if (settings.temperature >= 0)
         gp.temperature = settings.temperature;
     // Profile temperature: the active profile's pinned value is the default
@@ -1035,8 +1046,8 @@ int main(int argc, char** argv) {
     // context: per-file 64 KiB, total 256 KiB, max 32 attachments.
     MentionOptions mopt;
     mopt.root = opts.root;
-    mopt.max_file_bytes = 64 * 1024;
-    mopt.max_total_bytes = 256 * 1024;
+    mopt.max_file_bytes = std::size_t{64} * 1024;
+    mopt.max_total_bytes = std::size_t{256} * 1024;
     mopt.max_files = 32;
     // @-mentions are never sandbox-confined (see MentionOptions): the user typed
     // the path, so it carries their own authority regardless of the read-escape

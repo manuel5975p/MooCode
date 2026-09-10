@@ -1,10 +1,11 @@
 #include "agent/http.hpp"
 #include "agent/http_detail.hpp"
 
-#include "agent/strutil.hpp"  // hex_val
+#include "agent/strutil.hpp"  // hex_val, hex_digit
 #include "agent/trace.hpp"    // opt-in stall diagnostics
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <memory>
@@ -154,6 +155,11 @@ std::string transfer_summary(CURL* c) {
 // RAII for a curl_slist header list.
 struct SListGuard {
     curl_slist* list = nullptr;
+    SListGuard() = default;
+    SListGuard(const SListGuard&) = delete;
+    SListGuard& operator=(const SListGuard&) = delete;
+    SListGuard(SListGuard&&) = delete;
+    SListGuard& operator=(SListGuard&&) = delete;
     ~SListGuard() { curl_slist_free_all(list); }
     void append(const std::string& h) { list = curl_slist_append(list, h.c_str()); }
 };
@@ -166,7 +172,7 @@ struct SListGuard {
 // mutex per lock-data class with a trivial lock/unlock avoids deadlock.
 struct Share {
     CURLSH* sh = nullptr;
-    std::mutex mtx[CURL_LOCK_DATA_LAST];
+    std::array<std::mutex, CURL_LOCK_DATA_LAST> mtx;
     static void lock(CURL*, curl_lock_data d, curl_lock_access, void* u) {
         static_cast<Share*>(u)->mtx[d].lock();
     }
@@ -175,13 +181,18 @@ struct Share {
     }
 };
 
-// Non-null only between global_init() and global_cleanup(). When null (e.g. a
+// The share, owned by a function-local static so no mutable global exists.
+// Non-empty only between global_init() and global_cleanup(); when empty (e.g. a
 // test that never calls global_init), every request behaves exactly as before.
-Share* g_share = nullptr;
+std::unique_ptr<Share>& share_slot() {
+    static std::unique_ptr<Share> slot;
+    return slot;
+}
 
 // Attach the shared handle to a fresh easy handle, when the share is active.
 void apply_share(CURL* c) {
-    if (g_share && g_share->sh) curl_easy_setopt(c, CURLOPT_SHARE, g_share->sh);
+    const Share* s = share_slot().get();
+    if (s && s->sh) curl_easy_setopt(c, CURLOPT_SHARE, s->sh);
 }
 
 bool has_content_type(const std::vector<std::string>& headers) {
@@ -270,7 +281,6 @@ std::expected<Response, Error> get(std::string_view url,
 }
 
 std::string url_encode(std::string_view s) {
-    static constexpr char kHex[] = "0123456789ABCDEF";
     std::string out;
     out.reserve(s.size() * 3);
     for (unsigned char c : s) {
@@ -278,8 +288,8 @@ std::string url_encode(std::string_view s) {
             out += static_cast<char>(c);
         else {
             out += '%';
-            out += kHex[c >> 4];
-            out += kHex[c & 0x0F];
+            out += hex_digit(c >> 4);
+            out += hex_digit(c & 0x0F);
         }
     }
     return out;
@@ -383,28 +393,24 @@ std::expected<long, Error> post_json_stream(
 
 void global_init() {
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    // Build the process-wide share. On any failure, leave g_share null so the
+    // Build the process-wide share. On any failure, leave the slot empty so the
     // code falls back to today's independent-handle behaviour.
-    auto* s = new Share();
+    auto s = std::make_unique<Share>();
     s->sh = curl_share_init();
-    if (!s->sh) {
-        delete s;
-        return;
-    }
+    if (!s->sh) return;
     curl_share_setopt(s->sh, CURLSHOPT_LOCKFUNC, &Share::lock);
     curl_share_setopt(s->sh, CURLSHOPT_UNLOCKFUNC, &Share::unlock);
-    curl_share_setopt(s->sh, CURLSHOPT_USERDATA, s);
+    curl_share_setopt(s->sh, CURLSHOPT_USERDATA, s.get());
     curl_share_setopt(s->sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
     curl_share_setopt(s->sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
     curl_share_setopt(s->sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
-    g_share = s;
+    share_slot() = std::move(s);
 }
 
 void global_cleanup() {
-    if (g_share) {
-        if (g_share->sh) curl_share_cleanup(g_share->sh);
-        delete g_share;
-        g_share = nullptr;
+    if (std::unique_ptr<Share>& slot = share_slot()) {
+        if (slot->sh) curl_share_cleanup(slot->sh);
+        slot.reset();
     }
     curl_global_cleanup();
 }

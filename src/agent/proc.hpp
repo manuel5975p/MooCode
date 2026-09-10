@@ -29,6 +29,13 @@ std::expected<std::string, Error> run_process(
     int timeout_secs, std::size_t max_bytes = kProcOutputCap,
     std::int64_t max_lines = -1);
 
+// Exact stdout bytes of argv, no shell, stderr discarded, no trailers and no
+// truncation marker — for binary payloads (clipboard images) that run_process's
+// merged-stderr, annotated text would corrupt. argv nonempty; max_bytes > 0.
+// Error on spawn failure, timeout, nonzero exit, or output exceeding max_bytes.
+std::expected<std::string, Error> capture_raw(
+    const std::vector<std::string>& argv, std::size_t max_bytes);
+
 // First `limit` lines of `text` starting at 1-based `offset`. offset >= 1;
 // limit < 0 means rest-of-file (run_process relies on this for max_lines=-1).
 // Total: out-of-range windows clamp to what exists.

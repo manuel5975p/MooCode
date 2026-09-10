@@ -17,6 +17,7 @@
 #include "agent/persist.hpp"
 #include "agent/provider.hpp"
 #include "agent/provider_factory.hpp"
+#include "agent/strutil.hpp"
 
 using namespace moocode;
 
@@ -153,10 +154,12 @@ int main(int argc, char** argv) {
     }
 
     ProviderConnection c;
-    const char* env_base = std::getenv("LLM_BASE_URL");
-    const char* env_key = std::getenv("LLM_API_KEY");
+    const char* env_base = get_env("LLM_BASE_URL");
+    const char* env_key = get_env("LLM_API_KEY");
     c.base_url = !flag_base.empty() ? flag_base : (env_base ? env_base : "");
     c.api_key = !flag_key.empty() ? flag_key : (env_key ? env_key : "");
     c.kind = resolve_kind(flag_kind, /*profile_kind=*/"", c.base_url);
-    return probe(c.base_url, std::move(c)) ? 0 : 1;
+    // Label copied before the move: `c` is gone by the time probe reads it.
+    const std::string label = c.base_url;
+    return probe(label, std::move(c)) ? 0 : 1;
 }

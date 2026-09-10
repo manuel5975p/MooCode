@@ -11,22 +11,25 @@ namespace {
 
 // Set-once; reads are unsynchronised but the value stabilises on the main
 // thread at TUI startup before worker threads render, so an atomic suffices.
-std::atomic<GlyphMode> g_mode{GlyphMode::Unknown};
+std::atomic<GlyphMode>& mode_slot() {
+    static std::atomic<GlyphMode> m{GlyphMode::Unknown};
+    return m;
+}
 
 }  // namespace
 
 GlyphMode detect_glyph_mode() {
-    if (const char* g = std::getenv("MOOCODE_GLYPHS"); g && *g) {
+    if (const char* g = get_env("MOOCODE_GLYPHS"); g && *g) {
         std::string v = to_lower(g);
         if (v == "ascii") return GlyphMode::Ascii;
         if (v == "unicode" || v == "utf8" || v == "utf-8") return GlyphMode::Unicode;
     }
-    if (const char* a = std::getenv("MOOCODE_ASCII"); a && *a && a[0] != '0')
+    if (const char* a = get_env("MOOCODE_ASCII"); a && *a && a[0] != '0')
         return GlyphMode::Ascii;
 #ifdef _WIN32
     // Windows Terminal sets WT_SESSION and renders full Unicode; its absence
     // means the legacy conhost, where emoji/box-drawing are unreliable.
-    if (const char* wt = std::getenv("WT_SESSION"); wt && *wt) return GlyphMode::Unicode;
+    if (const char* wt = get_env("WT_SESSION"); wt && *wt) return GlyphMode::Unicode;
     return GlyphMode::Ascii;
 #else
     return GlyphMode::Unicode;
@@ -34,20 +37,20 @@ GlyphMode detect_glyph_mode() {
 }
 
 GlyphMode glyph_mode() {
-    GlyphMode m = g_mode.load(std::memory_order_relaxed);
+    GlyphMode m = mode_slot().load(std::memory_order_relaxed);
     if (m == GlyphMode::Unknown) {
         m = detect_glyph_mode();
-        g_mode.store(m, std::memory_order_relaxed);
+        mode_slot().store(m, std::memory_order_relaxed);
     }
     return m;
 }
 
-void set_glyph_mode(GlyphMode mode) { g_mode.store(mode, std::memory_order_relaxed); }
+void set_glyph_mode(GlyphMode mode) { mode_slot().store(mode, std::memory_order_relaxed); }
 
 const char* ascii_fold(std::uint32_t cp) {
     switch (cp) {
         case 0x00B7: return ".";        // · middle dot (separator)
-        case 0x2014: return "-";        // — em dash
+        case 0x2014:                    // — em dash
         case 0x2500: return "-";        // ─ box horizontal (rule)
         case 0x2026: return "...";      // … ellipsis
         case 0x2190: return "<-";       // ← left arrow

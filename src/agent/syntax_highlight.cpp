@@ -1,5 +1,6 @@
 #include "agent/syntax_highlight.hpp"
 
+#include <array>
 #include <cctype>
 #include <optional>
 #include <unordered_set>
@@ -358,12 +359,12 @@ std::vector<std::vector<HlSpan>> highlight_block(std::string_view code,
 // resolves settings.theme: the FTXUI TUI and the Qt GUI both need the mapping,
 // and only agent_syntax is pure enough for both to link.
 namespace {
-constexpr std::pair<SyntaxTheme, std::string_view> kThemeTable[] = {
+constexpr auto kThemeTable = std::to_array<std::pair<SyntaxTheme, std::string_view>>({
     {SyntaxTheme::Default, "default"},
     {SyntaxTheme::Mono, "mono"},
     {SyntaxTheme::Vivid, "vivid"},
     {SyntaxTheme::None, "none"},
-};
+});
 }  // namespace
 
 std::string_view syntax_theme_name(SyntaxTheme t) {

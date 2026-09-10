@@ -1,6 +1,8 @@
 #include "agent/persist.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -67,9 +69,9 @@ std::string iso_utc(std::time_t t) {
 #else
     if (!::gmtime_r(&t, &tm)) return {};
 #endif
-    char buf[32];
-    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
-    return buf;
+    std::array<char, 32> buf{};
+    std::strftime(buf.data(), buf.size(), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf.data();
 }
 
 }  // namespace
@@ -90,30 +92,79 @@ std::string moocode_home() {
 
 const std::vector<Profile>& builtin_profiles() {
     static const std::vector<Profile> p = {
-        {"minimax", "openai", "https://api.minimax.io/v1", "MiniMax-M3",
-         {"MiniMax-M3", "MiniMax-M1"}, {}, -1, false, "adaptive"},
-        {"deepseek", "openai", "https://api.deepseek.com/v1", "deepseek-v4-pro",
-         {"deepseek-v4-pro", "deepseek-v4-flash"}},
-        {"anthropic", "anthropic", "https://api.anthropic.com/v1",
-         "claude-sonnet-4-6",
-         {"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-opus-4-5",
-          "claude-opus-4", "claude-3-5-sonnet", "claude-3-5-haiku"}},
-        {"openai", "openai", "https://api.openai.com/v1", "gpt-5",
-         {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "o4", "o3", "o1"}},
-        {"qwen", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1",
-         "qwen-3", {"qwen-3", "qwen-3-coder"}},
-        {"glm", "openai", "https://open.bigmodel.cn/api/paas/v4", "glm-4",
-         {"glm-4"}},
-        {"gemini", "gemini",
-         "https://generativelanguage.googleapis.com/v1beta",
-         "gemini-3.5-pro", {"gemini-3.5-pro", "gemini-3.5-flash"}},
-        {"gemini-openai", "openai",
-         "https://generativelanguage.googleapis.com/v1beta/openai",
-         "gemini-3.5-pro", {"gemini-3.5-pro", "gemini-3.5-flash"}},
-        {"grok", "openai", "https://api.x.ai/v1", "grok-4", {"grok-4"}},
-        {"kimi", "openai", "https://api.kimi.com/coding/v1", "kimi-k3",
-         {"kimi-k3", "kimi-k2"}, {}, -1, false, "enabled",
-         1.0},  // the coding endpoint accepts only temperature=1
+        Profile{.name = "minimax",
+                .kind = "openai",
+                .base_url = "https://api.minimax.io/v1",
+                .model = "MiniMax-M3",
+                .models = {"MiniMax-M3", "MiniMax-M1"},
+                .blacklist = {},
+                .thinking = -1,
+                .drop_thinking_tag = false,
+                .thinking_type = "adaptive",
+                .temperature = -1},
+        Profile{.name = "deepseek",
+                .kind = "openai",
+                .base_url = "https://api.deepseek.com/v1",
+                .model = "deepseek-v4-pro",
+                .models = {"deepseek-v4-pro", "deepseek-v4-flash"},
+                .blacklist = {}},
+        Profile{.name = "anthropic",
+                .kind = "anthropic",
+                .base_url = "https://api.anthropic.com/v1",
+                .model = "claude-sonnet-4-6",
+                .models = {"claude-sonnet-4-6", "claude-sonnet-4-5",
+                           "claude-opus-4-5", "claude-opus-4",
+                           "claude-3-5-sonnet", "claude-3-5-haiku"},
+                .blacklist = {}},
+        Profile{.name = "openai",
+                .kind = "openai",
+                .base_url = "https://api.openai.com/v1",
+                .model = "gpt-5",
+                .models = {"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-4o", "o4",
+                           "o3", "o1"},
+                .blacklist = {}},
+        Profile{.name = "qwen",
+                .kind = "openai",
+                .base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                .model = "qwen-3",
+                .models = {"qwen-3", "qwen-3-coder"},
+                .blacklist = {}},
+        Profile{.name = "glm",
+                .kind = "openai",
+                .base_url = "https://open.bigmodel.cn/api/paas/v4",
+                .model = "glm-4",
+                .models = {"glm-4"},
+                .blacklist = {}},
+        Profile{.name = "gemini",
+                .kind = "gemini",
+                .base_url = "https://generativelanguage.googleapis.com/v1beta",
+                .model = "gemini-3.5-pro",
+                .models = {"gemini-3.5-pro", "gemini-3.5-flash"},
+                .blacklist = {}},
+        Profile{.name = "gemini-openai",
+                .kind = "openai",
+                .base_url =
+                    "https://generativelanguage.googleapis.com/v1beta/openai",
+                .model = "gemini-3.5-pro",
+                .models = {"gemini-3.5-pro", "gemini-3.5-flash"},
+                .blacklist = {}},
+        Profile{.name = "grok",
+                .kind = "openai",
+                .base_url = "https://api.x.ai/v1",
+                .model = "grok-4",
+                .models = {"grok-4"},
+                .blacklist = {}},
+        // the coding endpoint accepts only temperature=1
+        Profile{.name = "kimi",
+                .kind = "openai",
+                .base_url = "https://api.kimi.com/coding/v1",
+                .model = "kimi-k3",
+                .models = {"kimi-k3", "kimi-k2"},
+                .blacklist = {},
+                .thinking = -1,
+                .drop_thinking_tag = false,
+                .thinking_type = "enabled",
+                .temperature = 1.0},
     };
     return p;
 }
@@ -429,9 +480,9 @@ std::string new_conversation_id(const std::string& cwd) {
         if (ts[i] != ':') compact += ts[i];
 
     std::size_t h = std::hash<std::string>{}(cwd);
-    char hex[9];
-    std::snprintf(hex, sizeof hex, "%08x", static_cast<unsigned>(h & 0xffffffffu));
-    return compact + "-" + hex;
+    std::array<char, 9> hex{};
+    std::snprintf(hex.data(), hex.size(), "%08x", static_cast<unsigned>(h & 0xffffffffu));
+    return compact + "-" + hex.data();
 }
 
 std::expected<void, Error> save_conversation(const std::string& path,

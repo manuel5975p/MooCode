@@ -218,13 +218,13 @@ std::optional<std::int64_t> parse_iso8601(std::string_view ts) {
             if (mpos < ts.size() && ts[mpos] == ':') ++mpos;
             if (!num(mpos, 2, om) || mpos + 2 != ts.size() || oh > 23 || om > 59)
                 return std::nullopt;
-            offset = (oh * 3600LL + om * 60) * (ts[pos] == '+' ? 1 : -1);
+            offset = (oh * 3600LL + om * 60LL) * (ts[pos] == '+' ? 1 : -1);
         } else {
             return std::nullopt;
         }
     }
     const std::chrono::sys_days days{ymd};
-    return days.time_since_epoch().count() * 86400LL + h * 3600LL + mi * 60 + s -
+    return days.time_since_epoch().count() * 86400LL + h * 3600LL + mi * 60LL + s -
            offset;
 }
 

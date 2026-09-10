@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -78,6 +79,10 @@ namespace {
 
 using Result = std::expected<std::string, Error>;
 
+// Owns a stdio handle we opened ourselves; a null handle closes nothing, so
+// the stdin fallback below is never closed.
+using FilePtr = std::unique_ptr<FILE, decltype(&std::fclose)>;
+
 }  // namespace
 
 Tool ask_user_tool(QuestionGate* gate) {
@@ -152,15 +157,13 @@ Tool ask_user_tool(QuestionGate* gate) {
 
             // Try the console device first (works even when stdin is piped):
             // "/dev/tty" on POSIX, "CONIN$" on Windows.
-            FILE* tty = std::fopen(kConsoleInDevice, "r");
-            if (!tty) tty = stdin;
+            FilePtr console(std::fopen(kConsoleInDevice, "r"), &std::fclose);
+            FILE* tty = console ? console.get() : stdin;
 
             std::string line;
-            int c;
-            while ((c = std::fgetc(tty)) != EOF && c != '\n')
+            for (int c = std::fgetc(tty); c != EOF && c != '\n';
+                 c = std::fgetc(tty))
                 line += static_cast<char>(c);
-
-            if (tty != stdin) std::fclose(tty);
 
             // Trim trailing carriage return.
             while (!line.empty() && line.back() == '\r')

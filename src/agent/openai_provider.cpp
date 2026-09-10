@@ -1,5 +1,6 @@
 #include "agent/openai_provider.hpp"
 
+#include <array>
 #include <utility>
 
 #include "agent/http.hpp"
@@ -217,8 +218,8 @@ OpenAiProvider::OpenAiProvider(OpenAiConfig cfg) : cfg_(std::move(cfg)) {}
 
 void OpenAiProvider::set_params(const GenerationParams& p) {
     if (p.effort) cfg_.reasoning_effort = *p.effort;
-    if (p.temperature) cfg_.temperature = *p.temperature;
-    if (p.thinking) cfg_.thinking = *p.thinking;
+    if (p.temperature) cfg_.temperature = p.temperature;
+    if (p.thinking) cfg_.thinking = p.thinking;
     if (p.max_tokens) cfg_.max_tokens = *p.max_tokens;
 }
 
@@ -430,10 +431,10 @@ std::vector<std::string> parse_model_ids(const nlohmann::json& body) {
 
 bool openai_model_likely_reasoning(std::string_view model) {
     const std::string m = to_lower(model);
-    static constexpr std::string_view kFamilies[] = {
+    static constexpr auto kFamilies = std::to_array<std::string_view>({
         "deepseek", "minimax", "claude", "gpt-5", "o1",
         "o3",       "o4",      "qwen",   "glm",   "grok", "gemini", "kimi",
-    };
+    });
     for (std::string_view fam : kFamilies)
         if (m.find(fam) != std::string::npos) return true;
     return false;

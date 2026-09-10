@@ -271,7 +271,7 @@ nlohmann::json build_messages_request(const AnthropicConfig& cfg,
     // Debug: when MOOCODE_DEBUG_REQUEST is set, append a sanitised copy of the
     // outgoing request (image base64 replaced by its length) so we can confirm
     // whether image blocks actually reach the wire without dumping megabytes.
-    if (const char* dbg = std::getenv("MOOCODE_DEBUG_REQUEST")) {
+    if (const char* dbg = get_env("MOOCODE_DEBUG_REQUEST")) {
         nlohmann::json san = req;
         if (san.contains("messages"))
             for (auto& msg : san["messages"])
@@ -363,8 +363,8 @@ AnthropicProvider::AnthropicProvider(AnthropicConfig cfg) : cfg_(std::move(cfg))
 
 void AnthropicProvider::set_params(const GenerationParams& p) {
     if (p.effort) cfg_.reasoning_effort = *p.effort;
-    if (p.temperature) cfg_.temperature = *p.temperature;
-    if (p.thinking) cfg_.thinking = *p.thinking;
+    if (p.temperature) cfg_.temperature = p.temperature;
+    if (p.thinking) cfg_.thinking = p.thinking;
     if (p.max_tokens && *p.max_tokens > 0) cfg_.max_tokens = *p.max_tokens;
 }
 

@@ -6,6 +6,7 @@
 #include "agent/strutil.hpp"   // truncate, to_lower, trim_sv, default_trunc_marker
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <functional>
@@ -29,14 +30,14 @@ Result finalize(std::string out) { return truncate(std::move(out), kMaxOutput, d
 
 // LSP SymbolKind (1..26) -> short label. Out-of-range falls back to "symbol".
 const char* symbol_kind_name(int k) {
-    static const char* kinds[] = {
+    static constexpr std::array<const char*, 26> kinds = {
         "file",    "module",   "namespace", "package", "class",     "method",
         "property", "field",   "constructor", "enum",  "interface", "function",
         "variable", "constant", "string",   "number",  "boolean",   "array",
         "object",  "key",      "null",      "enum-member", "struct", "event",
         "operator", "type-param"};
-    if (k >= 1 && k <= 26) return kinds[k - 1];
-    return "symbol";
+    if (k < 1 || k > static_cast<int>(kinds.size())) return "symbol";
+    return kinds[static_cast<std::size_t>(k) - 1];
 }
 
 std::expected<void, Error> require_cxx_source(const fs::path& p) {
@@ -270,7 +271,7 @@ std::expected<Located, Error> resolve_pos(ClangdSession& s, const nlohmann::json
 }
 
 // JSON-schema fragment shared by every position-addressed tool.
-const char* kPosProps =
+constexpr std::string_view kPosProps =
     R"SC("path":{"type":"string","description":"file path, relative to project root"},
        "line":{"type":"integer","description":"1-based line with the symbol"},
        "symbol":{"type":"string","description":"exact identifier text to find on that line (e.g. from grep/read_file output)"},

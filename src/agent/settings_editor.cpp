@@ -1,10 +1,12 @@
 #include "agent/settings_editor.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string_view>
 
 #include "agent/strutil.hpp"  // to_lower
@@ -17,9 +19,9 @@ namespace {
 
 // Format a double to one decimal place, e.g. 0.7 -> "0.7".
 std::string float_str(double v) {
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "%.1f", v);
-    return buf;
+    std::array<char, 64> buf{};
+    std::snprintf(buf.data(), buf.size(), "%.1f", v);
+    return buf.data();
 }
 
 // Layout: the 14 General-tab fields in display order.
@@ -39,26 +41,27 @@ constexpr int kFieldTheme             = 12;
 constexpr int kFieldProfile           = 13;
 
 // Profile detail fields (inline labels).
+enum class ProfileSel {
+    SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking, SThinkingType, STemperature
+};
 struct ProfileField {
-    std::string label;
-    enum { SName, SKind, SBaseUrl, SModel, SThinking, SDropThinking, SThinkingType, STemperature } kind;
+    std::string_view label;
+    ProfileSel kind;
 };
-const ProfileField kProfileFields[] = {
-    {"name",          ProfileField::SName},
-    {"kind",          ProfileField::SKind},
-    {"base_url",      ProfileField::SBaseUrl},
-    {"model",         ProfileField::SModel},
-    {"thinking",      ProfileField::SThinking},
-    {"drop_think",    ProfileField::SDropThinking},
-    {"thinking_type", ProfileField::SThinkingType},
-    {"temperature",   ProfileField::STemperature},
-};
+constexpr std::array<ProfileField, 8> kProfileFields = {{
+    {"name",          ProfileSel::SName},
+    {"kind",          ProfileSel::SKind},
+    {"base_url",      ProfileSel::SBaseUrl},
+    {"model",         ProfileSel::SModel},
+    {"thinking",      ProfileSel::SThinking},
+    {"drop_think",    ProfileSel::SDropThinking},
+    {"thinking_type", ProfileSel::SThinkingType},
+    {"temperature",   ProfileSel::STemperature},
+}};
 
 // Valid provider kind values.
 bool valid_provider_kind(std::string_view s) {
     if (s.empty()) return true;
-    std::string ls(s);
-    // to_lower is our normaliser
     // allow "openai", "anthropic", "gemini"
     auto low = to_lower(s);
     return low == "openai" || low == "anthropic" || low == "gemini";
@@ -171,15 +174,15 @@ void ProfileEditor::begin_edit_profile_field() {
     if (profile_field_sel < 0) return;
     if (profile_field_sel < kNumProfileFields) {
         // Edit a profile field.
-        switch (kProfileFields[profile_field_sel].kind) {
-        case ProfileField::SName:     edit_buf = p.name; break;
-        case ProfileField::SKind:     edit_buf = p.kind; break;
-        case ProfileField::SBaseUrl:  edit_buf = p.base_url; break;
-        case ProfileField::SModel:    edit_buf = p.model; break;
-        case ProfileField::SThinking:    edit_buf = (p.thinking < 0) ? "" : (p.thinking > 0 ? "on" : "off"); break;
-        case ProfileField::SDropThinking: edit_buf = p.drop_thinking_tag ? "yes" : "no"; break;
-        case ProfileField::SThinkingType: edit_buf = p.thinking_type.empty() ? "enabled" : p.thinking_type; break;
-        case ProfileField::STemperature: edit_buf = p.temperature < 0 ? "" : float_str(p.temperature); break;
+        switch (kProfileFields[static_cast<std::size_t>(profile_field_sel)].kind) {
+        case ProfileSel::SName:     edit_buf = p.name; break;
+        case ProfileSel::SKind:     edit_buf = p.kind; break;
+        case ProfileSel::SBaseUrl:  edit_buf = p.base_url; break;
+        case ProfileSel::SModel:    edit_buf = p.model; break;
+        case ProfileSel::SThinking:    edit_buf = (p.thinking < 0) ? "" : (p.thinking > 0 ? "on" : "off"); break;
+        case ProfileSel::SDropThinking: edit_buf = p.drop_thinking_tag ? "yes" : "no"; break;
+        case ProfileSel::SThinkingType: edit_buf = p.thinking_type.empty() ? "enabled" : p.thinking_type; break;
+        case ProfileSel::STemperature: edit_buf = p.temperature < 0 ? "" : float_str(p.temperature); break;
         }
         edit_field_idx = profile_field_sel;
         profile_edit_text_mode = true;
@@ -194,23 +197,23 @@ void ProfileEditor::commit_profile_field_edit() {
     if (sel < 0 || sel >= static_cast<int>(profiles.size())) return;
     if (edit_field_idx < 0 || edit_field_idx >= kNumProfileFields) return;
     Profile& p = profiles[sel];
-    switch (kProfileFields[edit_field_idx].kind) {
-    case ProfileField::SName:     p.name = edit_buf; break;
-    case ProfileField::SKind:     p.kind = edit_buf; break;
-    case ProfileField::SBaseUrl:  p.base_url = edit_buf; break;
-    case ProfileField::SModel:    p.model = edit_buf; break;
-    case ProfileField::SThinking:
+    switch (kProfileFields[static_cast<std::size_t>(edit_field_idx)].kind) {
+    case ProfileSel::SName:     p.name = edit_buf; break;
+    case ProfileSel::SKind:     p.kind = edit_buf; break;
+    case ProfileSel::SBaseUrl:  p.base_url = edit_buf; break;
+    case ProfileSel::SModel:    p.model = edit_buf; break;
+    case ProfileSel::SThinking:
         if (edit_buf == "on") p.thinking = 1;
         else if (edit_buf == "off") p.thinking = 0;
         else p.thinking = -1;
         break;
-    case ProfileField::SDropThinking:
+    case ProfileSel::SDropThinking:
         p.drop_thinking_tag = (edit_buf == "yes" || edit_buf == "true" || edit_buf == "on" || edit_buf == "1");
         break;
-    case ProfileField::SThinkingType:
+    case ProfileSel::SThinkingType:
         p.thinking_type = edit_buf;
         break;
-    case ProfileField::STemperature:
+    case ProfileSel::STemperature:
         // Empty / "(unset)" clears the pin; otherwise parse like the global field.
         if (edit_buf.empty() || edit_buf == "(unset)") p.temperature = -1;
         else p.temperature = std::strtod(edit_buf.c_str(), nullptr);
@@ -236,7 +239,7 @@ ProfileEditor profile_editor_build(const std::vector<Profile>& profiles) {
 
 std::string profile_field_label(int i) {
     if (i < 0 || i >= kNumProfileFields) return {};
-    return kProfileFields[i].label;
+    return std::string(kProfileFields[static_cast<std::size_t>(i)].label);
 }
 
 std::string profile_field_value(const Profile& p, int field_idx) {
@@ -420,6 +423,19 @@ std::string SettingsForm::display_value(int idx,
     }
 }
 
+namespace {
+
+// Parse a decimal int field value; 0 when the text is not a plain integer.
+int field_int(std::string_view val) {
+    std::string vs(val);
+    char* end = nullptr;
+    long v = std::strtol(vs.c_str(), &end, 10);
+    if (end == vs.c_str() || v < 0) return 0;
+    return static_cast<int>(std::min<long>(v, std::numeric_limits<int>::max()));
+}
+
+}  // namespace
+
 bool SettingsForm::apply_value(int idx, std::string_view val) {
     if (idx < 0 || idx >= static_cast<int>(fields.size())) return false;
 
@@ -455,13 +471,13 @@ bool SettingsForm::apply_value(int idx, std::string_view val) {
         draft.base_url = val;
         break;
     case kFieldContextWindow:
-        draft.context_window = std::max(0, static_cast<int>(std::atoi(std::string(val).c_str())));
+        draft.context_window = field_int(val);
         break;
     case kFieldMaxIterations:
-        draft.max_iterations = std::max(0, static_cast<int>(std::atoi(std::string(val).c_str())));
+        draft.max_iterations = field_int(val);
         break;
     case kFieldMaxTokens:
-        draft.max_tokens = std::max(0, static_cast<int>(std::atoi(std::string(val).c_str())));
+        draft.max_tokens = field_int(val);
         break;
     case kFieldEffort:
         draft.effort = (val == fields[idx].unset_label) ? "" : std::string(val);
